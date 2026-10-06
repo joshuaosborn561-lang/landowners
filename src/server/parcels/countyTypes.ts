@@ -37,6 +37,10 @@ export interface CountyConfig {
   member?: string;
   /** Source column name for each normalized field. */
   field_map?: Record<string, string>;
+  /** Separate appraisal-values file when the ownership extract stores zeros. */
+  values_url?: string | null;
+  /** Local property-type or use text to a Texas PTAD category letter. */
+  use_code_map?: Record<string, string>;
   dataset_id?: string;
   /** ArcGIS result page size, or Socrata $limit. */
   inside_notes?: string;

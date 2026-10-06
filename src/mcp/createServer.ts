@@ -34,6 +34,7 @@ import { loadCounty } from '../server/parcels/loadCounty.js';
 import {
   parcelsCount,
   parcelsCounties,
+  parcelsOwnersCount,
   parcelsDatabaseCount,
   parcelsQueryDb,
   parcelsSampleDb,
@@ -367,6 +368,17 @@ RULE: Never dump all rows into chat; use query/sample/sync.`,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async (args) => jsonResult(await parcelsCount(args as ParcelFilters)),
+  );
+
+  server.registerTool(
+    'parcels_owners_count',
+    {
+      title: 'Appraisal parcels — distinct owners',
+      description: `Same filters as parcels_count. Counts distinct owners by normalized mailing address (uppercase trimmed line 1 plus ZIP5), split by owner_type and PTAD letter. Owners are the unit we email. Counts only.`,
+      inputSchema: parcelFilterShape,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) => jsonResult(await parcelsOwnersCount(args as ParcelFilters)),
   );
 
   server.registerTool(
@@ -1472,7 +1484,7 @@ Request: "${request || 'Get Cayden owner cells on his latest list'}"
             text: `Permit & Parcel MCP — appraisal parcels.
 Request: "${request || 'Summarize commercial parcels'}"
 1) parcels_counties
-2) parcels_summary or parcels_count (counts only)
+2) parcels_summary, parcels_count, or parcels_owners_count (counts only; owners are distinct mailing addresses)
 3) parcels_query with filters; max 50 rows. Use owner_or_church when the set is local_llc/institutional OR churches
 4) parcels_load for a county that is not loaded yet
 5) sync_to_supabase(dataset=parcels, client_tag=...) then select count(*)

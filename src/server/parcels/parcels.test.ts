@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { isChurchName } from './church.js';
+import { promoteMailLines, toParcelRecord } from './normalize.js';
+import { mapStateUse } from './ptad.js';
+import { lookupPlace } from './placeMiles.js';
 import { parcelMatches } from './filters.js';
 import { assertWritableProject } from './guard.js';
-import { mergeRegisteredCounties } from './registry.js';
+import { mergeRegisteredCounties, registeredCounties } from './registry.js';
 import { countiesWithinDallasRadius, radiusDiff, ROUGH_EXPECTED_COUNTIES } from './radius.js';
 import { placePacsField, sliceField, type PacsField } from './parsers/pacsLayout.js';
 import { socrataAdvance } from './parsers/socrata.js';
@@ -51,6 +54,12 @@ describe('county registry', () => {
     const dallas = merged.find((county) => county.name === 'Dallas');
     assert.equal(dallas?.status, 'active');
     assert.equal(dallas?.inside_60_miles, true);
+  });
+
+  it('marks Rains needs_request', () => {
+    const rains = registeredCounties().counties.find((county) => county.name === 'Rains');
+    assert.equal(rains?.status, 'needs_request');
+    assert.equal(rains?.parser, 'open_records');
   });
 });
 
@@ -150,6 +159,77 @@ describe('parcel filters', () => {
       ),
       false,
     );
+  });
+});
+
+describe('parcel normalize', () => {
+  const dallas: CountyConfig = {
+    name: 'Dallas',
+    state: 'TX',
+    source_type: 'dcad_extract',
+    source_url: 'https://example.test/dallas.zip',
+    parser: 'dcad',
+    refresh_cadence: 'annual',
+    status: 'active',
+    use_code_map: { RES: 'A', COM: 'F', BPP: 'L' },
+  };
+
+  it('promotes a blank mailing line and treats year built as improved', () => {
+    assert.deepEqual(promoteMailLines('', '100 MAIN ST', null), { addr1: '100 MAIN ST', addr2: null });
+    assert.deepEqual(promoteMailLines('C/O AGENT', '100 MAIN ST'), {
+      addr1: 'C/O AGENT',
+      addr2: '100 MAIN ST',
+    });
+    const row = toParcelRecord(
+      dallas,
+      {
+        account_id: '1',
+        owner_name: 'OAK STREET LLC',
+        owner_mail_addr1: ' ',
+        owner_mail_addr2: '100 MAIN ST',
+        improvement_value: 0,
+        year_built: 1984,
+        state_use_code: null,
+        prop_type: 'BPP',
+      },
+      () => null,
+      '2026-10-06T00:00:00.000Z',
+    );
+    assert.equal(row?.improved, true);
+    assert.equal(row?.owner_mail_addr1, '100 MAIN ST');
+    assert.equal(row?.owner_mail_addr2, null);
+    assert.equal(row?.state_use_code, 'L');
+    assert.equal(row?.year_built, 1984);
+  });
+
+  it('keeps an existing PTAD code and maps Hood mineral text', () => {
+    assert.equal(mapStateUse(dallas, 'F1', 'BPP', null), 'F1');
+    assert.equal(
+      mapStateUse(dallas, null, 'Acres: 1 RRC 1 API 42-221-1', null),
+      'G',
+    );
+    assert.equal(mapStateUse(dallas, null, 'MANUFACTURED HOUSING PERSONAL PROPERTY', null), 'M');
+  });
+
+  it('fills a Johnson situs ZIP from the city geocode table', () => {
+    assert.equal(lookupPlace('Johnson', 'Cleburne', null)?.zip, '76033');
+    assert.equal(lookupPlace('Tarrant', null, '26')?.city, 'Fort Worth');
+    const row = toParcelRecord(
+      {
+        name: 'Johnson',
+        state: 'TX',
+        source_type: 'delimited',
+        source_url: 'https://example.test/johnson.zip',
+        parser: 'delimited',
+        refresh_cadence: 'annual',
+        status: 'active',
+      },
+      { account_id: '9', owner_name: 'CITY OF CLEBURNE', situs_city: 'CLEBURNE' },
+      (zip) => (zip === '76033' ? 42.72 : null),
+      '2026-10-06T00:00:00.000Z',
+    );
+    assert.equal(row?.situs_zip, '76033');
+    assert.equal(row?.miles_from_dallas, 42.72);
   });
 });
 

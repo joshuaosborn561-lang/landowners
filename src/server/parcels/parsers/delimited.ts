@@ -58,6 +58,7 @@ export async function openDelimited(county: CountyConfig, workDir: string): Prom
     seen.add(account);
     const cityState = splitCityState(cell(cols, 'owner_mail_citystate'));
     const improvement = finiteNumber(cell(cols, 'improvement_value'));
+    const cityCode = cell(cols, 'city_code');
     const situs =
       cell(cols, 'situs_address') ||
       joinParts([
@@ -86,6 +87,7 @@ export async function openDelimited(county: CountyConfig, workDir: string): Prom
       deed_date: cell(cols, 'deed_date'),
       improved: (improvement ?? 0) > 0,
       prop_type: cell(cols, 'prop_type'),
+      city_code: cityCode,
     };
   }
   }

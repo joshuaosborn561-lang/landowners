@@ -3,6 +3,7 @@ import { loadCounty } from '../parcels/loadCounty.js';
 import {
   parcelsCount,
   parcelsCounties,
+  parcelsOwnersCount,
   parcelsQueryDb,
   parcelsSampleDb,
   parcelsSummaryDb,
@@ -57,6 +58,14 @@ parcelsRouter.get('/summary', async (req, res, next) => {
 parcelsRouter.get('/count', async (req, res, next) => {
   try {
     res.json(await parcelsCount(queryFrom(req) as ParcelFilters));
+  } catch (err) {
+    next(err);
+  }
+});
+
+parcelsRouter.get('/owners-count', async (req, res, next) => {
+  try {
+    res.json(await parcelsOwnersCount(queryFrom(req) as ParcelFilters));
   } catch (err) {
     next(err);
   }

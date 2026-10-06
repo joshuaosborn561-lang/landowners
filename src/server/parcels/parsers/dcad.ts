@@ -1,7 +1,7 @@
 import { basename, join } from 'node:path';
 import type { CountyConfig } from '../countyTypes.js';
 import { dateFromText, downloadToFile, unzipFiles, unzipList } from '../download.js';
-import { blankToNull, finiteNumber, joinParts, type RawParcel } from '../normalize.js';
+import { blankToNull, finiteNumber, joinParts, promoteMailLines, type RawParcel } from '../normalize.js';
 import { col, csvRecords, headerIndex } from './csvRecords.js';
 
 interface ValueRow {
@@ -54,25 +54,43 @@ export async function openDcad(county: CountyConfig, workDir: string): Promise<{
     return hit ? join(dir, basename(hit)) : null;
   };
   const values = new Map<string, ValueRow>();
-  const appraisalPath = file('ACCOUNT_APPRL_YEAR.CSV');
-  if (appraisalPath) {
-    const { index, rows } = await indexByHeader(appraisalPath);
+  const readAppraisal = async (path: string | null) => {
+    if (!path) return;
+    const { index, rows } = await indexByHeader(path);
     for await (const cols of rows) {
       const id = col(cols, index, 'ACCOUNT_NUM');
       const year = Number(col(cols, index, 'APPRAISAL_YR'));
       if (!id || !Number.isFinite(year)) continue;
-      const prev = values.get(id);
-      if (prev && prev.year > year) continue;
       const total = finiteNumber(col(cols, index, 'TOT_VAL'));
       const previous = finiteNumber(col(cols, index, 'PREV_MKT_VAL'));
-      values.set(id, {
+      const next: ValueRow = {
         year,
         land: finiteNumber(col(cols, index, 'LAND_VAL')),
         improvement: finiteNumber(col(cols, index, 'IMPR_VAL')),
         assessed: total && total > 0 ? total : previous,
-      });
+      };
+      const prev = values.get(id);
+      if (!prev) {
+        values.set(id, next);
+        continue;
+      }
+      const score = (row: ValueRow) => ((row.improvement ?? 0) > 0 ? 2 : 0) + ((row.assessed ?? 0) > 0 ? 1 : 0);
+      if (score(next) > score(prev) || (score(next) === score(prev) && next.year >= prev.year)) {
+        values.set(id, next);
+      }
     }
+  };
+  if (county.values_url) {
+    const valuesZip = join(workDir, 'dcad-values.zip');
+    await downloadToFile(county.values_url, valuesZip);
+    const valuesListing = await unzipList(valuesZip);
+    const valuesName = valuesListing.find((row) => row.name.toUpperCase().endsWith('ACCOUNT_APPRL_YEAR.CSV'))?.name;
+    if (!valuesName) throw new Error(`${county.name} values zip has no ACCOUNT_APPRL_YEAR.CSV`);
+    const valuesDir = join(workDir, 'dcad-values');
+    await unzipFiles(valuesZip, valuesDir, [valuesName]);
+    await readAppraisal(join(valuesDir, basename(valuesName)));
   }
+  await readAppraisal(file('ACCOUNT_APPRL_YEAR.CSV'));
   const buildings = new Map<string, BuildingRow>();
   const takeBuilding = async (path: string | null, yearCol: string, areaCol: string) => {
     if (!path) return;
@@ -128,6 +146,12 @@ export async function openDcad(county: CountyConfig, workDir: string): Promise<{
       const building = buildings.get(id);
       const landRow = land.get(id);
       const owner = joinParts([col(cols, index, 'OWNER_NAME1'), col(cols, index, 'OWNER_NAME2')]);
+      const mail = promoteMailLines(
+        col(cols, index, 'OWNER_ADDRESS_LINE1'),
+        col(cols, index, 'OWNER_ADDRESS_LINE2'),
+        col(cols, index, 'OWNER_ADDRESS_LINE3'),
+        col(cols, index, 'OWNER_ADDRESS_LINE4'),
+      );
       yield {
         account_id: id,
         owner_name: owner,
@@ -139,12 +163,8 @@ export async function openDcad(county: CountyConfig, workDir: string): Promise<{
         ]),
         situs_city: col(cols, index, 'PROPERTY_CITY'),
         situs_zip: col(cols, index, 'PROPERTY_ZIPCODE'),
-        owner_mail_addr1: col(cols, index, 'OWNER_ADDRESS_LINE1'),
-        owner_mail_addr2: joinParts([
-          col(cols, index, 'OWNER_ADDRESS_LINE2'),
-          col(cols, index, 'OWNER_ADDRESS_LINE3'),
-          col(cols, index, 'OWNER_ADDRESS_LINE4'),
-        ]),
+        owner_mail_addr1: mail.addr1,
+        owner_mail_addr2: mail.addr2,
         owner_mail_city: col(cols, index, 'OWNER_CITY'),
         owner_mail_state: col(cols, index, 'OWNER_STATE'),
         owner_mail_zip: col(cols, index, 'OWNER_ZIPCODE'),
