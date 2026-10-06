@@ -9,6 +9,9 @@ client/dist/
 coverage/
 .vite/
 
+data/geo/cache/
+data/parcels/cache/
+
 # Appraisal district raw downloads / extracts (keep normalized CSVs)
 data/parcels/**/*.zip
 data/parcels/**/extract*/

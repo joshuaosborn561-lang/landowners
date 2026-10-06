@@ -1,20 +1,11 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { CountyCode, OwnerType, ParcelRecord } from '../types.js';
+import { isChurchName } from '../parcels/church.js';
+import { parcelMatches, type ParcelFilters } from '../parcels/filters.js';
+import type { CountyCode, ParcelRecord } from '../types.js';
 import { classifyOwnerType } from './ownerType.js';
 
-export interface ParcelQuery {
-  county?: CountyCode | string;
-  owner_name?: string;
-  city?: string;
-  zip?: string;
-  use_code?: string;
-  owner_type?: OwnerType | string;
-  min_assessed_value?: number;
-  q?: string;
-  page?: number;
-  page_size?: number;
-}
+export interface ParcelQuery extends ParcelFilters {}
 
 export interface ParcelQueryResult {
   total: number;
@@ -139,19 +130,48 @@ function loadFile(county: CountyCode, path: string): ParcelRecord[] {
     const ownerName = owner || '';
     // Always classify from owner_name so municipalities leave the unknown bucket.
     const ownerType = classifyOwnerType(ownerName);
+    const mailing = emptyToNull(cols[iMail]);
+    const parcelAddress = emptyToNull(cols[iParcel]);
+    const city = emptyToNull(cols[iCity]);
+    const zip = emptyToNull(cols[iZip])?.slice(0, 5) ?? null;
+    const useCode = emptyToNull(cols[iUse]);
+    const propType = emptyToNull(cols[iProp]) || 'commercial';
+    const assessed = toNum(emptyToNull(cols[iValue]));
     out.push({
       id: parcelId(county, accountId),
       county,
+      state: 'TX',
+      fips: null,
       account_id: accountId,
       owner_name: ownerName,
-      mailing_address: emptyToNull(cols[iMail]),
-      parcel_address: emptyToNull(cols[iParcel]),
-      city: emptyToNull(cols[iCity]),
-      zip: emptyToNull(cols[iZip])?.slice(0, 5) ?? null,
-      assessed_value: toNum(emptyToNull(cols[iValue])),
-      use_code: emptyToNull(cols[iUse]),
-      prop_type: emptyToNull(cols[iProp]) || 'commercial',
+      mailing_address: mailing,
+      parcel_address: parcelAddress,
+      city,
+      zip,
+      assessed_value: assessed,
+      use_code: useCode,
+      prop_type: propType,
       owner_type: ownerType,
+      situs_address: parcelAddress,
+      situs_city: city,
+      situs_zip: zip,
+      owner_mail_addr1: mailing,
+      owner_mail_addr2: null,
+      owner_mail_city: null,
+      owner_mail_state: null,
+      owner_mail_zip: null,
+      state_use_code: useCode,
+      use_desc: propType,
+      improved: assessed != null && assessed > 0,
+      is_church: isChurchName(ownerName, propType),
+      land_value: null,
+      improvement_value: null,
+      year_built: null,
+      acres: null,
+      deed_date: null,
+      miles_from_dallas: null,
+      source: 'commercial_csv',
+      loaded_at: null,
     });
   }
   return out;
@@ -185,36 +205,7 @@ export function loadParcels(): ParcelRecord[] {
 }
 
 function matches(p: ParcelRecord, q: ParcelQuery): boolean {
-  if (q.county && p.county.toLowerCase() !== String(q.county).toLowerCase()) return false;
-  if (q.owner_type && p.owner_type !== q.owner_type) return false;
-  if (q.zip && (p.zip || '').slice(0, 5) !== String(q.zip).slice(0, 5)) return false;
-  if (q.city && !(p.city || '').toLowerCase().includes(String(q.city).toLowerCase())) return false;
-  if (q.use_code && !(p.use_code || '').toLowerCase().includes(String(q.use_code).toLowerCase())) {
-    return false;
-  }
-  if (q.owner_name && !p.owner_name.toLowerCase().includes(String(q.owner_name).toLowerCase())) {
-    return false;
-  }
-  if (q.min_assessed_value != null) {
-    if (p.assessed_value == null || p.assessed_value < q.min_assessed_value) return false;
-  }
-  if (q.q) {
-    const needle = String(q.q).toLowerCase();
-    const hay = [
-      p.owner_name,
-      p.mailing_address,
-      p.parcel_address,
-      p.city,
-      p.zip,
-      p.use_code,
-      p.account_id,
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-    if (!hay.includes(needle)) return false;
-  }
-  return true;
+  return parcelMatches(p, q);
 }
 
 function filterAll(q: ParcelQuery): ParcelRecord[] {
@@ -293,7 +284,7 @@ export function parcelsToCsv(rows: ParcelRecord[]): string {
     'use_code',
     'prop_type',
   ];
-  const esc = (v: string | number | null | undefined) => {
+  const esc = (v: string | number | boolean | null | undefined) => {
     const s = v == null ? '' : String(v);
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
