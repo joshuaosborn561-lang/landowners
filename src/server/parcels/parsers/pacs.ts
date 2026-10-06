@@ -7,6 +7,7 @@ import {
   joinParts,
   pacsAcres,
   pacsMoney,
+  promoteMailLines,
   type RawParcel,
 } from '../normalize.js';
 import type { CountyConfig } from '../countyTypes.js';
@@ -132,6 +133,11 @@ export async function openPacs(county: CountyConfig, workDir: string): Promise<P
         pacsMoney(sliceField(line, infoFields.get('assessed_val'))) ??
         pacsMoney(sliceField(line, infoFields.get('appraised_val'))) ??
         pacsMoney(sliceField(line, infoFields.get('market_value')));
+      const mail = promoteMailLines(
+        sliceField(line, infoFields.get('py_addr_line1')),
+        sliceField(line, infoFields.get('py_addr_line2')),
+        sliceField(line, infoFields.get('py_addr_line3')),
+      );
       yield {
         account_id: propId,
         owner_name:
@@ -145,8 +151,8 @@ export async function openPacs(county: CountyConfig, workDir: string): Promise<P
         ]),
         situs_city: sliceField(line, infoFields.get('situs_city')),
         situs_zip: sliceField(line, infoFields.get('situs_zip')),
-        owner_mail_addr1: sliceField(line, infoFields.get('py_addr_line1')),
-        owner_mail_addr2: sliceField(line, infoFields.get('py_addr_line2')),
+        owner_mail_addr1: mail.addr1,
+        owner_mail_addr2: mail.addr2,
         owner_mail_city: sliceField(line, infoFields.get('py_addr_city')),
         owner_mail_state: sliceField(line, infoFields.get('py_addr_state')),
         owner_mail_zip: sliceField(line, infoFields.get('py_addr_zip')),

@@ -167,6 +167,36 @@ export async function parcelsCount(filters: ParcelFilters = {}): Promise<{ count
   return { count: Number(data?.count ?? 0), filters: body };
 }
 
+export async function parcelsOwnersCount(filters: ParcelFilters = {}): Promise<{
+  owners: number;
+  by_owner_type: Record<string, number>;
+  by_ptad: Record<string, number>;
+  by_county: Record<string, number>;
+  filters: Record<string, unknown>;
+}> {
+  assertFilters(filters);
+  const body = rpcParcelFilters(filters);
+  if (!hasSupabase()) {
+    return { owners: 0, by_owner_type: {}, by_ptad: {}, by_county: {}, filters: body };
+  }
+  const data = await rpc<{
+    owners?: number;
+    by_owner_type?: Record<string, number>;
+    by_ptad?: Record<string, number>;
+    by_county?: Record<string, number>;
+  }>('permit_parcel_owners_count', {
+    p_secret: ingestSecret(),
+    p_filters: body,
+  });
+  return {
+    owners: Number(data?.owners ?? 0),
+    by_owner_type: data?.by_owner_type ?? {},
+    by_ptad: data?.by_ptad ?? {},
+    by_county: data?.by_county ?? {},
+    filters: body,
+  };
+}
+
 function pageArgs(filters: ParcelFilters, cap: number): { limit: number; offset: number; page: number } {
   const pageSize = Math.min(Math.max(filters.page_size ?? 25, 1), cap);
   const page = Math.max(filters.page ?? 1, 1);

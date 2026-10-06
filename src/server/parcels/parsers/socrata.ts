@@ -72,6 +72,7 @@ function mapRow(row: Record<string, unknown>, fieldMap: Record<string, string>):
     acres: finiteNumber(text(row, fieldMap, 'acres')),
     deed_date: text(row, fieldMap, 'deed_date'),
     improved: (improvement ?? 0) > 0 || finiteNumber(text(row, fieldMap, 'year_built')) != null,
+    prop_type: text(row, fieldMap, 'prop_type'),
   };
 }
 

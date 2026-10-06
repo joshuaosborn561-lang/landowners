@@ -2,6 +2,8 @@ import { classifyOwnerType } from '../services/ownerType.js';
 import type { ParcelRecord } from '../types.js';
 import { isChurchName } from './church.js';
 import type { CountyConfig } from './countyTypes.js';
+import { lookupPlace } from './placeMiles.js';
+import { mapStateUse } from './ptad.js';
 
 export interface RawParcel {
   account_id: string;
@@ -24,6 +26,20 @@ export interface RawParcel {
   acres?: number | null;
   deed_date?: string | null;
   prop_type?: string | null;
+  /** Jurisdiction code when the roll has no situs city name. Tarrant uses this. */
+  city_code?: string | null;
+}
+
+/** First nonempty mailing line becomes addr1. The next line, if any, stays addr2. */
+export function promoteMailLines(...lines: Array<string | null | undefined>): {
+  addr1: string | null;
+  addr2: string | null;
+} {
+  const cleaned = lines.map((line) => blankToNull(line)).filter((line): line is string => Boolean(line));
+  return {
+    addr1: cleaned[0] ?? null,
+    addr2: cleaned.length > 1 ? cleaned.slice(1).join(', ') : null,
+  };
 }
 
 export function blankToNull(value: string | null | undefined): string | null {
@@ -129,17 +145,20 @@ export function toParcelRecord(
   if (!accountId) return null;
   const ownerName = blankToNull(raw.owner_name) ?? '';
   const useDesc = blankToNull(raw.use_desc);
-  const stateUse = blankToNull(raw.state_use_code);
-  const situsZip = zip5(raw.situs_zip);
   const mailZip = zip5(raw.owner_mail_zip);
   const improvement = finiteNumber(raw.improvement_value);
   const land = finiteNumber(raw.land_value);
   const assessed = finiteNumber(raw.assessed_value);
-  const improved = raw.improved != null ? Boolean(raw.improved) : (improvement ?? 0) > 0;
+  const yearBuilt = parseYearBuilt(raw.year_built);
+  const improved = (improvement ?? 0) > 0 || yearBuilt != null;
   const situsAddress = blankToNull(raw.situs_address);
-  const situsCity = blankToNull(raw.situs_city);
-  const mail1 = blankToNull(raw.owner_mail_addr1);
-  const mail2 = blankToNull(raw.owner_mail_addr2);
+  const place = lookupPlace(county.name, raw.situs_city, raw.city_code);
+  const situsCity = blankToNull(raw.situs_city) ?? place?.city ?? null;
+  const situsZip = zip5(raw.situs_zip) ?? zip5(place?.zip);
+  const mail = promoteMailLines(raw.owner_mail_addr1, raw.owner_mail_addr2);
+  const mail1 = mail.addr1;
+  const mail2 = mail.addr2;
+  const stateUse = mapStateUse(county, raw.state_use_code, raw.prop_type, raw.use_desc);
   const mailCity = blankToNull(raw.owner_mail_city);
   const mailState = blankToNull(raw.owner_mail_state);
   const mailing = [mail1, mail2, joinParts([mailCity, mailState, mailZip])].filter(Boolean).join(', ');
@@ -172,7 +191,7 @@ export function toParcelRecord(
     is_church: isChurchName(ownerName, useDesc),
     land_value: land,
     improvement_value: improvement,
-    year_built: parseYearBuilt(raw.year_built),
+    year_built: yearBuilt,
     acres: finiteNumber(raw.acres),
     deed_date: parseDeedDate(raw.deed_date),
     miles_from_dallas: milesForZip(situsZip),

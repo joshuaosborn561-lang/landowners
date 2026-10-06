@@ -6,10 +6,16 @@
       "fips": "48113",
       "source_type": "dcad_extract",
       "source_url": "https://www.dallascad.org/ViewPDFs.aspx?type=3&id=%5C%5CDCAD.ORG%5CWEB%5CWEBDATA%5CWEBFORMS%5Cdata%20products%5CDCAD2027_CURRENT.zip",
+      "values_url": "https://www.dallascad.org/ViewPDFs.aspx?type=3&id=%5C%5CDCAD.ORG%5CWEB%5CWEBDATA%5CWEBFORMS%5CDATA%20PRODUCTS%5CDCAD2026_CURRENT.ZIP",
       "parser": "dcad",
       "refresh_cadence": "annual",
       "status": "active",
-      "notes": "DCAD current data products zip. Full roll, not the commercial-only extract."
+      "notes": "Ownership from the current DCAD zip. Improvement, land, and total value come from the 2026 certified ACCOUNT_APPRL_YEAR file because the 2027 ownership extract stores those amounts as zero. Mailing address uses the first nonempty owner address line.",
+      "use_code_map": {
+        "RES": "A",
+        "COM": "F",
+        "BPP": "L"
+      }
     },
     {
       "name": "Tarrant",
@@ -21,9 +27,10 @@
       "delimiter": "|",
       "refresh_cadence": "annual",
       "status": "active",
-      "notes": "TAD PropertyData delimited full roll. The file has no situs ZIP, so miles_from_dallas is null unless a later PropertyLocation join is added.",
+      "notes": "TAD PropertyData delimited full roll. The file has no situs ZIP. City is a 3-digit jurisdiction code; data/parcels/place-miles.json maps each code to a Census-geocoded situs ZIP. Code 000 is unincorporated and uses the Fort Worth ZIP. Newark (041) and Briar (035) had no Census match.",
       "field_map": {
         "account_id": "Account_Num",
+        "city_code": "City",
         "owner_name": "Owner_Name",
         "owner_mail_addr1": "Owner_Address",
         "owner_mail_citystate": "Owner_CityState",
@@ -69,7 +76,14 @@
         "use_desc": "propsubtype",
         "year_built": "imprvyearbuilt",
         "deed_date": "deedeffdate",
-        "source_date": "datadate"
+        "source_date": "datadate",
+        "prop_type": "propsubtype"
+      },
+      "use_code_map": {
+        "Residential": "A",
+        "Commercial": "F",
+        "BPP": "L",
+        "Land": "C"
       }
     },
     {
@@ -82,7 +96,11 @@
       "parser": "pacs",
       "refresh_cadence": "annual",
       "status": "active",
-      "notes": "True Automation PACS fixed width. Layout 8.0.33 drives the shared parser. Acreage is an integer with 4 implied decimals."
+      "notes": "True Automation PACS fixed width. Layout 8.0.33 drives the shared parser. Acreage is an integer with 4 implied decimals. Owner mailing line 1 is often blank; the street is in line 2 and is promoted.",
+      "use_code_map": {
+        "MN": "G",
+        "P": "L"
+      }
     },
     {
       "name": "Denton",
@@ -142,7 +160,7 @@
       "member": "externalnal.tab",
       "refresh_cadence": "annual",
       "status": "active",
-      "notes": "Tab-delimited appraisal export. The zip also contains building and land tabs; externalnal.tab is the property roll. It has no situs ZIP.",
+      "notes": "Tab-delimited appraisal export. The zip also contains building and land tabs; externalnal.tab is the property roll. It has no situs ZIP. Each situs city is mapped to a Census-geocoded ZIP in data/parcels/place-miles.json. Coyote Flats and blank situs use the Cleburne ZIP because the geocoder did not match those addresses.",
       "field_map": {
         "account_id": "ACCOUNT",
         "owner_name": "NAME",
@@ -174,7 +192,11 @@
       "parser": "pacs",
       "refresh_cadence": "annual",
       "status": "active",
-      "notes": "2026 certified roll. Shared PACS layout; rejected if the record width does not match."
+      "notes": "2026 certified roll. Shared PACS layout; rejected if the record width does not match. Owner mailing line 1 is often blank; the street is in line 2 and is promoted.",
+      "use_code_map": {
+        "MN": "G",
+        "P": "L"
+      }
     },
     {
       "name": "Grayson",
@@ -186,7 +208,11 @@
       "parser": "pacs",
       "refresh_cadence": "annual",
       "status": "active",
-      "notes": "Open-records export zip. Treated as PACS until the listing shows otherwise."
+      "notes": "Open-records export zip. Treated as PACS. Owner mailing line 1 is often blank; the street is in line 2 and is promoted.",
+      "use_code_map": {
+        "MN": "G",
+        "P": "L"
+      }
     },
     {
       "name": "Hood",
@@ -215,6 +241,13 @@
         "improvement_value": "webprop_impmkt",
         "assessed_value": "webprop_mkt",
         "acres": "webprop_acres"
+      },
+      "use_code_map": {
+        "MANUFACTURED HOUSING PERSONAL PROPERTY": "M",
+        "BUSINESS PERSONAL PROPERTY": "L",
+        "INV/FFE BUSINESS PERSONAL PROPERTY": "L",
+        "EQUIP BUSINESS PERSONAL PROPERTY": "L",
+        "INV/FFE/VEH BUSINESS PERSONAL PROPERTY": "L"
       }
     },
     {
@@ -227,25 +260,22 @@
       "parser": "pacs",
       "refresh_cadence": "annual",
       "status": "active",
-      "notes": "Certified data zip as of 2026-08-27. Shared PACS layout."
+      "notes": "Certified data zip as of 2026-08-27. Shared PACS layout. Owner mailing line 1 is often blank; the street is in line 2 and is promoted.",
+      "use_code_map": {
+        "MN": "G",
+        "P": "L"
+      }
     },
     {
       "name": "Rains",
       "state": "TX",
       "fips": "48379",
-      "source_type": "gis_table",
-      "source_url": "https://rainscad.org/wp-content/uploads/2023/05/PARCELS_BIS.zip",
-      "parser": "gis_dbf",
+      "source_type": "open_records",
+      "source_url": "https://rainscad.org",
+      "parser": "open_records",
       "refresh_cadence": "annual",
-      "status": "active",
-      "notes": "Free parcel attribute DBF from 2023. Older than the other rolls. Geometry is not loaded. The table has owner, acres, and deed text, and no situs or values.",
-      "field_map": {
-        "account_id": "PROP_ID",
-        "owner_name": "OWNER",
-        "acres": "ACRES",
-        "deed_date": "DEED_NEW",
-        "use_desc": "AG"
-      }
+      "status": "needs_request",
+      "notes": "The only free file is PARCELS_BIS.zip dated 2020-09-28. It has no situs or values and yields no ICP rows, so it is needs_request rather than loaded. File an open records request with Rains CAD."
     },
     {
       "name": "Rockwall",
