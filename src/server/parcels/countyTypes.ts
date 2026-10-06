@@ -33,6 +33,8 @@ export interface CountyConfig {
   order_by?: string;
   page_size?: number;
   delimiter?: string;
+  /** Zip member to read when the archive holds more than one table. */
+  member?: string;
   /** Source column name for each normalized field. */
   field_map?: Record<string, string>;
   dataset_id?: string;

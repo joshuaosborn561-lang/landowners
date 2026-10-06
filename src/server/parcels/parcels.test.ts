@@ -5,7 +5,7 @@ import { parcelMatches } from './filters.js';
 import { assertWritableProject } from './guard.js';
 import { mergeRegisteredCounties } from './registry.js';
 import { countiesWithinDallasRadius, radiusDiff, ROUGH_EXPECTED_COUNTIES } from './radius.js';
-import { sliceField, type PacsField } from './parsers/pacsLayout.js';
+import { placePacsField, sliceField, type PacsField } from './parsers/pacsLayout.js';
 import { socrataAdvance } from './parsers/socrata.js';
 import { openVendor } from './parsers/vendor.js';
 import type { CountyConfig } from './countyTypes.js';
@@ -71,6 +71,15 @@ describe('pacs slice', () => {
     assert.equal(sliceField(line, field), '000000000042');
     const owner: PacsField = { name: 'py_owner_name', start: 13, length: 10 };
     assert.equal(sliceField(line, owner), 'XXXXXXXXXX');
+  });
+
+  it('continues a field when the layout leaves Start blank', () => {
+    const fields: PacsField[] = [];
+    placePacsField(fields, 'prop_id', 1, 12);
+    placePacsField(fields, 'prop_type_cd', null, 5);
+    placePacsField(fields, 'py_owner_name', null, 70);
+    assert.equal(fields[1]?.start, 13);
+    assert.equal(fields[2]?.start, 18);
   });
 });
 

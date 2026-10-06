@@ -25,6 +25,14 @@ const SYNONYMS: Record<string, string[]> = {
   year_built: ['yr_built', 'year_built', 'yearbuilt'],
 };
 
+/** ArcGIS date fields arrive as epoch milliseconds. */
+function epochDate(raw: string | null): string | null {
+  if (!raw || !/^\d{12,13}$/.test(raw)) return raw;
+  const date = new Date(Number(raw));
+  if (Number.isNaN(date.getTime())) return raw;
+  return date.toISOString().slice(0, 10);
+}
+
 function norm(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
@@ -66,7 +74,7 @@ export function mapGisRecord(
     improvement_value: improvement,
     assessed_value: finiteNumber(pick('assessed_value')),
     acres: finiteNumber(pick('acres')),
-    deed_date: pick('deed_date'),
+    deed_date: epochDate(pick('deed_date')),
     year_built: finiteNumber(pick('year_built')),
     improved: (improvement ?? 0) > 0,
   };

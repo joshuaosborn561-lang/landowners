@@ -38,8 +38,9 @@ export async function openArcgis(county: CountyConfig): Promise<{
       const features = body.features ?? [];
       meta.downloaded += features.length;
       for (const feature of features) yield mapGisRecord(feature.attributes ?? {}, county.field_map);
-      if (!body.exceededTransferLimit || features.length < pageSize) break;
+      if (features.length < pageSize) break;
       offset += features.length;
+      if (offset > 2_000_000) throw new Error(`${county.name} ArcGIS page offset exceeded 2000000`);
     }
   }
 

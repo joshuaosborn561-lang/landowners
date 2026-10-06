@@ -4,7 +4,7 @@ import { basename, join } from 'node:path';
 import { parseCsv } from '../../services/parcels.js';
 import type { CountyConfig } from '../countyTypes.js';
 import { dateFromText, downloadToFile, unzipList, unzipFiles } from '../download.js';
-import { blankToNull, finiteNumber, splitCityState, type RawParcel } from '../normalize.js';
+import { blankToNull, finiteNumber, joinParts, splitCityState, type RawParcel } from '../normalize.js';
 
 function parseLine(line: string, delimiter: string): string[] {
   if (delimiter === ',') return parseCsv(`${line}\n`)[0] ?? [];
@@ -23,10 +23,11 @@ export async function openDelimited(county: CountyConfig, workDir: string): Prom
   const dest = join(workDir, 'delimited.zip');
   const meta = await downloadToFile(county.source_url, dest);
   const listing = await unzipList(dest);
-  const dataFile =
-    listing.find((row) => /\.(txt|csv)$/i.test(row.name)) ??
-    listing.sort((a, b) => b.bytes - a.bytes)[0];
-  if (!dataFile) throw new Error(`${county.name} archive was empty`);
+  const dataFile = county.member
+    ? listing.find((row) => row.name.toLowerCase().includes(county.member!.toLowerCase()))
+    : listing.find((row) => /\.(txt|csv|tab)$/i.test(row.name)) ??
+      listing.sort((a, b) => b.bytes - a.bytes)[0];
+  if (!dataFile) throw new Error(`${county.name} archive has no ${county.member ?? 'delimited'} member`);
   const dir = join(workDir, 'delimited');
   await unzipFiles(dest, dir, [dataFile.name]);
   const path = join(dir, basename(dataFile.name));
@@ -57,10 +58,17 @@ export async function openDelimited(county: CountyConfig, workDir: string): Prom
     seen.add(account);
     const cityState = splitCityState(cell(cols, 'owner_mail_citystate'));
     const improvement = finiteNumber(cell(cols, 'improvement_value'));
+    const situs =
+      cell(cols, 'situs_address') ||
+      joinParts([
+        cell(cols, 'situs_num'),
+        cell(cols, 'situs_street'),
+        cell(cols, 'situs_suffix'),
+      ]);
     yield {
       account_id: account,
       owner_name: cell(cols, 'owner_name'),
-      situs_address: cell(cols, 'situs_address'),
+      situs_address: situs,
       situs_city: cell(cols, 'situs_city'),
       situs_zip: cell(cols, 'situs_zip'),
       owner_mail_addr1: cell(cols, 'owner_mail_addr1'),
