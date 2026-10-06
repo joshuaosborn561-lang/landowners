@@ -87,10 +87,12 @@ Call \`permitstack_estimate_credits\` (alias \`shovels_estimate_credits\`, or \`
 5. CSV import only if Cayden already has a file — do not require CSV for non-DFW
 
 ### Parcels
-1. \`parcels_summary\`
-2. \`parcels_query\` (filter county / owner_name / city / zip / use_code / owner_type)
-3. \`sync_to_supabase\` with dataset=parcels
-4. \`build_operators\` for mailing-address rollup (counts only)
+1. \`parcels_counties\` — every registered county, including the 60-mile Dallas set
+2. \`parcels_summary\` / \`parcels_count\` (counts only)
+3. \`parcels_query\` (max 50) for any registered county. Filters include improved, is_church, owner_type, max_miles_from_dallas
+4. \`parcels_load(county, state)\` downloads one county. Adding a county is a row in data/parcels/counties.json
+5. \`sync_to_supabase\` with dataset=parcels and client_tag writes the matching key set
+6. \`build_operators\` for mailing-address rollup (counts only)
 
 ## Tool cheat sheet
 | Tool | Spends PermitStack requests? | Purpose |

@@ -9,7 +9,7 @@ SalesGlider MCP for public **permit + parcel** records — not a people-resolver
 2. **PermitStack API key from Claude** — Cayden can set or change it with `permitstack_set_api_key` (alias `shovels_set_api_key`)
 3. **PermitStack request estimates** — 1 HTTP request per search page (100/day on the free tier)
 4. **Calling lists in Supabase** — persist pulls so Cayden (or anyone) can filter them for cold calling
-5. **Appraisal-district commercial parcels** — DCAD / TAD / CCAD bulk extracts
+5. **Appraisal rolls** — one county adapter per row in `data/parcels/counties.json`. The 60-mile Dallas set comes from Census TIGER, not a hardcoded enum.
 6. **Operator rollup** — group shell LLCs by normalised tax-bill mailing address (`build_operators`)
 
 The Propwire → LoopNet → Google owner cascade was **removed**.
@@ -40,7 +40,7 @@ This service writes to project **`kemvxzhcxvynmoutwdrh`**, schema **`permit_parc
 | `lookup_line_type` | Veriphone Standard (~$2.40/1k) cell vs landline |
 | `owner_people_search` / `record_owner_cell` | Google + free people-search leftovers |
 | `set_enrichment_api_key` | Cayden pastes Veriphone / Texas CPA / optional Florida Sunbiz keys |
-| `parcels_*` | CAD parcel summary/query/sample/export |
+| `parcels_*` | County registry, counts, query (max 50), sample (max 20), load, sync |
 | `build_operators` | Mailing-address operator rollup → `permit_parcel.operators` (counts only) |
 | `sync_to_supabase` | Full matching-set S2S sync — **counts only**; contractor syncs also catalog a calling list |
 
@@ -86,7 +86,9 @@ Registered agents (CT Corporation, law firms) are **not** owners — prefer PIR 
 
 ## Data
 
-Normalized commercial CSVs (refresh annually):
+County sources live in `data/parcels/counties.json` (name, state, fips, source_type, source_url, parser, refresh cadence, status). A new US county is a config row. `source_type=vendor_api` is reserved and does not call a vendor. Counties with no free bulk file stay `needs_request`.
+
+The commercial CSV cache is still used by the operator rollup:
 
 - `data/parcels/dcad/commercial_parcels.csv`
 - `data/parcels/tad/commercial_parcels.csv`

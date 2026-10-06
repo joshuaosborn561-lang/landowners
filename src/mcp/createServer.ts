@@ -29,13 +29,17 @@ import {
   scoreCallingList,
 } from '../server/services/enrichCallingList.js';
 import { buildOperators } from '../server/services/operators.js';
+import { parcelsToCsv } from '../server/services/parcels.js';
+import { loadCounty } from '../server/parcels/loadCounty.js';
 import {
-  loadParcels,
-  parcelsSummary,
-  parcelsToCsv,
-  queryParcels,
-  sampleParcels,
-} from '../server/services/parcels.js';
+  parcelsCount,
+  parcelsCounties,
+  parcelsDatabaseCount,
+  parcelsQueryDb,
+  parcelsSampleDb,
+  parcelsSummaryDb,
+} from '../server/parcels/query.js';
+import type { ParcelFilters } from '../server/parcels/filters.js';
 import { estimateShovelsCredits } from '../server/services/shovelsCredits.js';
 import { pullShovelsCallingList } from '../server/services/pullShovelsCallingList.js';
 import { shovelsPull } from '../server/services/shovelsPull.js';
@@ -75,11 +79,32 @@ const placeFilter = z
     'Geography tag. Cache tools: Dallas | Fort_Worth | Rockwall_County. Live tools (shovels_pull / estimate / shovels_pull_calling_list): any US city, county, state code, or east_coast / west_coast.',
   );
 
-const countyEnum = z.enum(['Dallas', 'Tarrant', 'Collin']).optional();
-const ownerTypeEnum = z
-  .enum(['individual', 'local_llc', 'institutional', 'municipal', 'unknown'])
-  .optional();
-
+const countyName = z
+  .string()
+  .optional()
+  .describe('Registered county name. Any county in data/parcels/counties.json or the 60-mile TIGER set.');
+const parcelFilterShape = {
+  county: countyName,
+  state: z.string().optional().describe('State code, default TX'),
+  owner_name: z.string().optional(),
+  city: z.string().optional(),
+  zip: z.string().optional(),
+  use_code: z.string().optional(),
+  owner_type: z
+    .union([z.string(), z.array(z.string())])
+    .optional()
+    .describe('individual, local_llc, institutional, municipal, unknown. String, comma list, or array.'),
+  owner_or_church: z
+    .boolean()
+    .optional()
+    .describe('When true, owner_type matches OR is_church, combined with the other filters.'),
+  is_church: z.boolean().optional(),
+  improved: z.boolean().optional(),
+  min_assessed_value: z.number().optional(),
+  state_use_code: z.string().optional(),
+  max_miles_from_dallas: z.number().optional().describe('Keep rows whose situs ZIP centroid is within this many miles. Null miles are excluded.'),
+  q: z.string().optional(),
+};
 const minPermitCount = z
   .number()
   .int()
@@ -115,7 +140,7 @@ async function healthPayload() {
     permitstack_api_key: shovelsKey,
     shovels_api_key: shovelsKey,
     shovels_contractors_loaded: loadShovelsContractors().length,
-    parcels_loaded: loadParcels().length,
+    parcels_loaded: (await parcelsDatabaseCount()) ?? null,
     when_to_use:
       'PermitStack commercial GCs (including request estimates); DCAD/TAD/CCAD commercial parcels; mailing-address operator rollup; persist/filter cold-calling lists in Supabase (e.g. Cayden). The PermitStack key is already on the server — do not ask anyone to rotate it.',
     when_not_to_use:
@@ -309,92 +334,118 @@ RULE: Never dump all rows into chat; use query/sample/sync.`,
   // ---- Parcels ----
 
   server.registerTool(
-    'parcels_summary',
+    'parcels_counties',
     {
-      title: 'Appraisal parcels — summary',
-      description: `Counts for DCAD/TAD/CCAD commercial parcels by county and owner_type. Free.`,
+      title: 'Appraisal parcels — registered counties',
+      description: `Every registered county with status, source, row count, last loaded, and whether the boundary is inside 60 miles of downtown Dallas. Counts only.`,
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async () => jsonResult(parcelsSummary()),
+    async () => jsonResult(await parcelsCounties()),
+  );
+
+  server.registerTool(
+    'parcels_summary',
+    {
+      title: 'Appraisal parcels — summary',
+      description: `Counts by county, owner_type, improved, and is_church. Optional county and state. Counts only.`,
+      inputSchema: {
+        county: countyName,
+        state: z.string().optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) => jsonResult(await parcelsSummaryDb(args)),
+  );
+
+  server.registerTool(
+    'parcels_count',
+    {
+      title: 'Appraisal parcels — filtered count',
+      description: `Free sizing with the same filters as parcels_query. Returns a count, never rows.`,
+      inputSchema: parcelFilterShape,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) => jsonResult(await parcelsCount(args as ParcelFilters)),
   );
 
   server.registerTool(
     'parcels_query',
     {
       title: 'Appraisal parcels — paginated query',
-      description: `WHEN TO USE: Search commercial parcels (county, owner_name, city, zip, use_code, owner_type).
-WHAT IT DOES: Returns one page (max 50) + totals. Free. Local CAD extracts.
-NEXT: sync_to_supabase(dataset=parcels) for full matching set.`,
+      description: `Search any registered county. Returns one page (max 50) plus the total. Free.
+Filters: improved, is_church, min_assessed_value, owner_type, state_use_code, max_miles_from_dallas.
+NEXT: parcels_count to size a set, sync_to_supabase(dataset=parcels) to store the matching keys.`,
       inputSchema: {
-        county: countyEnum,
-        owner_name: z.string().optional(),
-        city: z.string().optional(),
-        zip: z.string().optional(),
-        use_code: z.string().optional(),
-        owner_type: ownerTypeEnum,
-        min_assessed_value: z.number().optional(),
-        q: z.string().optional(),
+        ...parcelFilterShape,
         page: z.number().int().min(1).optional(),
         page_size: z.number().int().min(1).max(50).optional(),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async (args) => jsonResult(queryParcels(args)),
+    async (args) => jsonResult(await parcelsQueryDb(args as ParcelFilters)),
   );
 
   server.registerTool(
     'parcels_sample',
     {
-      title: 'Appraisal parcels — random sample',
-      description: `≤20 random matching parcels for QA. Free.`,
+      title: 'Appraisal parcels — sample',
+      description: `At most 20 matching parcels for QA. Free.`,
       inputSchema: {
         n: z.number().int().min(1).max(20).optional(),
-        county: countyEnum,
-        owner_name: z.string().optional(),
-        city: z.string().optional(),
-        zip: z.string().optional(),
-        use_code: z.string().optional(),
-        owner_type: ownerTypeEnum,
-        q: z.string().optional(),
+        ...parcelFilterShape,
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async (args) => jsonResult(sampleParcels(args.n ?? 20, args)),
+    async (args) => jsonResult(await parcelsSampleDb(args.n ?? 20, args as ParcelFilters)),
+  );
+
+  server.registerTool(
+    'parcels_load',
+    {
+      title: 'Appraisal parcels — load one county',
+      description: `Download and upsert one registered county on (county, account_id). Returns rows_downloaded, rows_parsed, rows_upserted. needs_request counties are skipped. vendor_api is not called.`,
+      inputSchema: {
+        county: z.string().describe('Registered county name'),
+        state: z.string().optional().describe('State code, default TX'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await loadCounty(args.county, args.state ?? 'TX'));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'parcels_load failed');
+      }
+    },
   );
 
   server.registerTool(
     'parcels_export_csv',
     {
       title: 'Appraisal parcels — filtered CSV',
-      description: `CSV for matching parcels, cap 5000. Prefer sync_to_supabase for bulk persistence.`,
-      inputSchema: {
-        county: countyEnum,
-        owner_name: z.string().optional(),
-        city: z.string().optional(),
-        zip: z.string().optional(),
-        use_code: z.string().optional(),
-        owner_type: ownerTypeEnum,
-        min_assessed_value: z.number().optional(),
-        q: z.string().optional(),
-      },
+      description: `CSV for matching parcels, cap 5000. Prefer sync_to_supabase for the full set.`,
+      inputSchema: parcelFilterShape,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async (args) => {
       const items = [];
       let page = 1;
+      let total = 0;
       for (;;) {
-        const batch = queryParcels({ ...args, page, page_size: 50 });
+        const batch = await parcelsQueryDb({ ...(args as ParcelFilters), page, page_size: 50 });
+        total = batch.total;
         items.push(...batch.items);
         if (page >= batch.total_pages || items.length >= 5000) break;
         page += 1;
       }
       const capped = items.slice(0, 5000);
       return jsonResult({
-        total_matching: capped.length,
+        total_matching: total,
+        returned: capped.length,
         capped_at: 5000,
         csv: parcelsToCsv(capped),
-        hint: 'For bulk persistence use sync_to_supabase(dataset=parcels).',
+        hint: 'For the full matching set use sync_to_supabase(dataset=parcels).',
       });
     },
   );
@@ -1230,8 +1281,17 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
         dataset: z
           .enum(['parcels', 'contractors', 'all'])
           .describe('Which dataset(s) to sync'),
-        county: countyEnum.describe('Optional parcel county filter'),
-        owner_type: ownerTypeEnum.describe('Optional parcel owner_type filter'),
+        county: countyName.describe('Optional parcel county filter'),
+        state: z.string().optional(),
+        owner_type: z.union([z.string(), z.array(z.string())]).optional(),
+        owner_or_church: z.boolean().optional(),
+        is_church: z.boolean().optional(),
+        improved: z.boolean().optional(),
+        min_assessed_value: z.number().optional(),
+        state_use_code: z.string().optional(),
+        max_miles_from_dallas: z.number().optional(),
+        client_tag: z.string().optional().describe('Snake_case tag for the filtered key set'),
+        filters: z.record(z.unknown()).optional().describe('Same filters as parcels_query'),
         place: placeFilter.describe('Optional Shovels place filter'),
         q: z.string().optional().describe('Optional text filter for the chosen dataset'),
         list_name: z
@@ -1255,8 +1315,17 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
           list_name: args.list_name,
           owner: args.owner,
           parcel_query: {
+            ...(args.filters as ParcelFilters | undefined),
             county: args.county,
+            state: args.state,
             owner_type: args.owner_type,
+            owner_or_church: args.owner_or_church,
+            is_church: args.is_church,
+            improved: args.improved,
+            min_assessed_value: args.min_assessed_value,
+            state_use_code: args.state_use_code,
+            max_miles_from_dallas: args.max_miles_from_dallas,
+            client_tag: args.client_tag,
             q: args.dataset === 'contractors' ? undefined : args.q,
           },
           contractor_query: {
@@ -1402,10 +1471,11 @@ Request: "${request || 'Get Cayden owner cells on his latest list'}"
             type: 'text',
             text: `Permit & Parcel MCP — appraisal parcels.
 Request: "${request || 'Summarize commercial parcels'}"
-1) parcels_summary
-2) parcels_query with filters; note owner_type split
-3) Drop institutional. For local_llc, use build_operators + free Texas Comptroller PIR.
-4) sync_to_supabase(dataset=parcels) then select count(*)
+1) parcels_counties
+2) parcels_summary or parcels_count (counts only)
+3) parcels_query with filters; max 50 rows. Use owner_or_church when the set is local_llc/institutional OR churches
+4) parcels_load for a county that is not loaded yet
+5) sync_to_supabase(dataset=parcels, client_tag=...) then select count(*)
 Propwire cascade is removed — do not offer it.`,
           },
         },

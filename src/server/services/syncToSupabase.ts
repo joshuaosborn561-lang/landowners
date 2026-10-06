@@ -1,12 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { getSupabase, hasSupabase, ingestSecret, SCHEMA } from '../lib/supabase.js';
 import { supabaseProjectRef, supabaseTargetMeta } from '../lib/supabaseTarget.js';
-import type { ParcelRecord } from '../types.js';
-import {
-  collectParcelsForSync,
-  parcelsToCsv,
-  type ParcelQuery,
-} from './parcels.js';
+import { assertParcelsWritableProject } from '../parcels/guard.js';
+import { syncParcelFilterSet } from '../parcels/query.js';
+import { type ParcelQuery } from './parcels.js';
 import { nationalChainHit } from '../lib/nationalChain.js';
 import {
   contractorsToCsv,
@@ -133,50 +130,6 @@ export async function upsertExport(jobId: string, filename: string, content: str
   return error ? 0 : Buffer.byteLength(content, 'utf8');
 }
 
-function parcelToLead(p: ParcelRecord) {
-  return {
-    place_id: `parcel:${p.county}:${p.account_id}`,
-    name: p.owner_name,
-    owner_name: p.owner_name,
-    email: '',
-    phone: '',
-    website: '',
-    city: p.city ?? '',
-    state: 'TX',
-    zip: p.zip ?? '',
-    rating: '',
-    reviews: '',
-    category: p.use_code || 'commercial',
-    main_category: p.owner_type,
-    maps_url: '',
-    in_icp: p.owner_type === 'local_llc' || p.owner_type === 'individual' ? 'true' : 'false',
-    address: p.parcel_address ?? '',
-    mailing_address: p.mailing_address ?? '',
-    assessed_value: p.assessed_value ?? '',
-    account_id: p.account_id,
-    county: p.county,
-    owner_type: p.owner_type,
-    source_pipeline: 'permit_parcel',
-  };
-}
-
-async function upsertParcelRows(parcels: ParcelRecord[]): Promise<number> {
-  if (!hasSupabase() || !parcels.length) return 0;
-  let n = 0;
-  for (let i = 0; i < parcels.length; i += 200) {
-    const chunk = parcels.slice(i, i + 200);
-    const { data, error } = await getSupabase().rpc('ingest_permit_parcel_parcels', {
-      p_secret: ingestSecret(),
-      p_rows: chunk,
-    });
-    if (error) {
-      throw new Error(`ingest_permit_parcel_parcels failed at offset ${i}: ${error.message}`);
-    }
-    n += Number((data as { upserted?: number })?.upserted ?? chunk.length);
-  }
-  return n;
-}
-
 export async function syncParcelsToSupabase(q: ParcelQuery = {}): Promise<SyncResult> {
   const jobId = `permit-parcels-${randomUUID().slice(0, 8)}`;
   const meta = baseMeta();
@@ -195,69 +148,31 @@ export async function syncParcelsToSupabase(q: ParcelQuery = {}): Promise<SyncRe
       supabase_project: meta.supabase_project,
       supabase_schema: SCHEMA,
     },
-    verify_sql: [
-      `select count(*) from public.scrape_leads where job_id = '${jobId}';`,
-      `select count(*) from permit_parcel.parcels;`,
-      `select count(distinct (county, account_id)) from permit_parcel.parcels;`,
-      `select owner_type, count(*) from permit_parcel.parcels group by 1;`,
-      ...(q.county
-        ? [`select count(*) from permit_parcel.parcels where county = '${String(q.county)}';`]
-        : []),
-    ],
+    verify_sql: [`select count(*) from permit_parcel.parcels;`],
     assistant_instructions:
-      'Parcel sync finished server-to-server. Verify with verify_sql count(*) only — do not pull rows into chat. Target project is supabase_project / supabase_schema.',
+      'Parcel sync wrote the matching account keys to permit_parcel.parcel_client_sets. The appraisal roll itself is loaded with parcels_load. Verify with verify_sql count(*) only — do not pull rows into chat.',
   };
   if (!hasSupabase()) return { ...base, error: 'Supabase not configured' };
-
-  const collected = collectParcelsForSync(q);
-  const parcels = collected.parcels;
-  let schemaUpserted = 0;
   try {
-    schemaUpserted = await upsertParcelRows(parcels);
+    assertParcelsWritableProject();
   } catch (err) {
-    return {
-      ...base,
-      error: err instanceof Error ? err.message : String(err),
-      counts: {
-        ...base.counts,
-        parcels_source_rows: collected.source_rows,
-        parcels_matched: parcels.length,
-        duplicates_collapsed: collected.duplicates_collapsed,
-        permit_parcel_schema_upserted: 0,
-      },
-    };
+    return { ...base, error: err instanceof Error ? err.message : String(err) };
   }
 
-  const tags = tagsFor('parcels', q.county ? [String(q.county).toLowerCase()] : []);
-  const jobErr = await upsertJob({
-    id: jobId,
-    prompt: `Permit & Parcel MCP parcels sync ${JSON.stringify(q)}`,
-    tags,
-    requestEstimate: parcels.length,
-  });
-  if (jobErr) return { ...base, error: jobErr };
-
-  const leads = parcels.map(parcelToLead);
-  const { deleted, inserted, error } = await replaceLeads(jobId, tags, leads);
-  if (error) return { ...base, error };
-
-  if (inserted > 0 && schemaUpserted === 0) {
+  try {
+    const synced = await syncParcelFilterSet(q, q.client_tag);
     return {
       ...base,
-      ok: false,
-      error:
-        `Schema upsert failed silently: rows_inserted=${inserted} but permit_parcel_schema_upserted=0. ` +
-        `Rows may be in scrape_leads only. Check ingest_permit_parcel_parcels / county filter / schema.`,
+      ok: true,
+      verify_sql: synced.verify_sql,
       counts: {
         scrape_job_id: jobId,
-        rows_inserted: inserted,
-        rows_deleted: deleted,
+        rows_inserted: synced.rows_inserted,
+        rows_deleted: synced.rows_deleted,
         export_bytes: 0,
         dataset: 'parcels',
-        parcels_source_rows: collected.source_rows,
-        parcels_matched: parcels.length,
-        duplicates_collapsed: collected.duplicates_collapsed,
-        permit_parcel_schema_upserted: schemaUpserted,
+        client_tag: synced.client_tag,
+        parcels_matched: synced.rows_inserted,
         truncated: false,
         has_more: false,
         county_filter: q.county ?? null,
@@ -265,34 +180,9 @@ export async function syncParcelsToSupabase(q: ParcelQuery = {}): Promise<SyncRe
         supabase_schema: SCHEMA,
       },
     };
+  } catch (err) {
+    return { ...base, error: err instanceof Error ? err.message : String(err) };
   }
-
-  // Export CSV can be huge for full sync — skip writing mega CSVs to scrape_exports.
-  let exportBytes = 0;
-  if (parcels.length <= 10_000) {
-    exportBytes = await upsertExport(jobId, `${jobId}.csv`, parcelsToCsv(parcels));
-  }
-
-  return {
-    ...base,
-    ok: true,
-    counts: {
-      scrape_job_id: jobId,
-      rows_inserted: inserted,
-      rows_deleted: deleted,
-      export_bytes: exportBytes,
-      dataset: 'parcels',
-      parcels_source_rows: collected.source_rows,
-      parcels_matched: parcels.length,
-      duplicates_collapsed: collected.duplicates_collapsed,
-      permit_parcel_schema_upserted: schemaUpserted,
-      truncated: false,
-      has_more: false,
-      county_filter: q.county ?? null,
-      supabase_project: meta.supabase_project,
-      supabase_schema: SCHEMA,
-    },
-  };
 }
 
 export async function syncContractorsToSupabase(
