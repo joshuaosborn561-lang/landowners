@@ -7,8 +7,8 @@ const LOOKUP = 'https://elicensing21.mass.gov/CitizenAccess/GeneralProperty/Prop
 
 export function parseMaCslText(text: string, sourceUrl: string): ResolverResult {
   const body = text.replace(/\r/g, '');
-  // Accela chrome repeats "Licensee" on the empty search form — require a result row.
-  if (!/License Status|Expiration Date|License Type/i.test(body) || /please enter|no records found/i.test(body)) {
+  // Accela chrome repeats "Licensee" / "License Type" on the empty search form.
+  if (!/License Status/i.test(body) || !/Expiration Date/i.test(body) || /please enter|no records found/i.test(body)) {
     return { people: [], coverage_reason: 'not_found', source: 'ma_csl', source_url: sourceUrl };
   }
   if (/inactive|expired|revoked|lapsed/i.test(body) && !/active/i.test(body)) {
@@ -18,7 +18,7 @@ export function parseMaCslText(text: string, sourceUrl: string): ResolverResult 
     body.match(/Licensee(?:\s+Name)?[:\s]+([A-Z][A-Za-z .'-]{2,60})/i) ||
     body.match(/License Holder[:\s]+([A-Z][A-Za-z .'-]{2,60})/i) ||
     body.match(/Name of Licensee[:\s]+([A-Z][A-Za-z .'-]{2,60})/i);
-  if (!holder?.[1]) {
+  if (!holder?.[1] || /MASSACHUSETTS|COMMONWEALTH|LICENSE|SEARCH|PLEASE|DEPARTMENT|ACCELA/i.test(holder[1])) {
     return { people: [], coverage_reason: 'not_found', source: 'ma_csl', source_url: sourceUrl };
   }
   const split = splitPersonName(holder[1]);

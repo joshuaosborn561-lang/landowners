@@ -191,7 +191,7 @@ export async function resolveMnDli(
   let csvText = csvMemo && Date.now() - csvMemo.fetchedAt < 6 * 60 * 60 * 1000 ? csvMemo.text : null;
   let status = 200;
   if (!csvText) {
-    const got = await client.get(RESIDENTIAL, { headers: { Accept: 'text/csv,*/*' } });
+    const got = await client.get(RESIDENTIAL, { headers: { Accept: '*/*' } });
     status = got.status;
     if (looksBlocked(got.status, got.body)) {
       await writeBoardCache({ board: 'mn_dli', cache_key: key, http_status: got.status, body: got.body });

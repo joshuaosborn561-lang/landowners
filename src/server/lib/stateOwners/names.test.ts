@@ -129,7 +129,11 @@ describe('other board parsers', () => {
 
   it('parses TDLR / MA / MN / PA holder lines', () => {
     assert.equal(parseTxTdlrText('Licensee: SAM LEE\nActive\n', 'u').people[0]?.last_name, 'LEE');
-    assert.equal(parseMaCslText('License Status: Active\nLicense Holder: PAT KIM\n', 'u').people[0]?.role, 'owner');
+    assert.equal(
+      parseMaCslText('License Status: Active\nExpiration Date: 01/01/2030\nLicense Holder: PAT KIM\n', 'u').people[0]
+        ?.role,
+      'owner',
+    );
     assert.equal(
       parseMnDliText('Qualifying Person: CHRIS ONG\nActive\n', 'u').people[0]?.role,
       'qualifying_individual',
@@ -138,7 +142,7 @@ describe('other board parsers', () => {
   });
 
   it('ignores Accela chrome that only says Licensee', () => {
-    const result = parseMaCslText('Search\nLicensee\nPlease enter a license number\n', 'u');
+    const result = parseMaCslText('Search\nLicensee\nLicense Type\nPlease enter a license number\n', 'u');
     assert.equal(result.people.length, 0);
     assert.equal(result.coverage_reason, 'not_found');
   });
