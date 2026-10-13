@@ -7,7 +7,8 @@ const LOOKUP = 'https://elicensing21.mass.gov/CitizenAccess/GeneralProperty/Prop
 
 export function parseMaCslText(text: string, sourceUrl: string): ResolverResult {
   const body = text.replace(/\r/g, '');
-  if (/no records|0 record|not found/i.test(body) && !/licensee|license holder/i.test(body)) {
+  // Accela chrome repeats "Licensee" on the empty search form — require a result row.
+  if (!/License Status|Expiration Date|License Type/i.test(body) || /please enter|no records found/i.test(body)) {
     return { people: [], coverage_reason: 'not_found', source: 'ma_csl', source_url: sourceUrl };
   }
   if (/inactive|expired|revoked|lapsed/i.test(body) && !/active/i.test(body)) {

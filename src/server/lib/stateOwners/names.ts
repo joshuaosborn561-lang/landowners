@@ -31,16 +31,18 @@ export function tokenizeCapsName(raw: string): string[] {
     .filter(Boolean);
 }
 
-/**
- * ALL-CAPS board names. Last token is last name only for 2–3 tokens.
- * 4+ tokens: first_name stays null and review_flag is set — do not guess.
- */
-export function splitPersonName(raw: string): {
+export interface SplitPersonName {
   first_name: string | null;
   last_name: string | null;
   full_name_raw: string;
   review_flag: boolean;
-} {
+}
+
+/**
+ * ALL-CAPS board names. Last token is last name only for 2–3 tokens.
+ * 4+ tokens: first_name stays null and review_flag is set — do not guess.
+ */
+export function splitPersonName(raw: string): SplitPersonName {
   const full_name_raw = String(raw || '').replace(/\s+/g, ' ').trim();
   const tokens = tokenizeCapsName(full_name_raw);
   if (tokens.length === 2 || tokens.length === 3) {
@@ -55,6 +57,32 @@ export function splitPersonName(raw: string): {
     return { first_name: null, last_name: null, full_name_raw, review_flag: true };
   }
   return { first_name: null, last_name: tokens[0] || null, full_name_raw, review_flag: tokens.length !== 1 };
+}
+
+/**
+ * Board registries print `LAST, FIRST M` (WA L&I, TDLR). Fall back to
+ * space-delimited splitPersonName when there is no comma.
+ */
+export function parseBoardPersonName(raw: string): SplitPersonName {
+  const full_name_raw = String(raw || '').replace(/\s+/g, ' ').trim();
+  const comma = full_name_raw.indexOf(',');
+  if (comma < 0) return splitPersonName(full_name_raw);
+  const lastTokens = tokenizeCapsName(full_name_raw.slice(0, comma));
+  const firstTokens = tokenizeCapsName(full_name_raw.slice(comma + 1));
+  if (lastTokens.length === 1 && firstTokens.length >= 1 && firstTokens.length <= 2) {
+    return {
+      first_name: firstTokens.join(' '),
+      last_name: lastTokens[0] || null,
+      full_name_raw,
+      review_flag: false,
+    };
+  }
+  return {
+    first_name: firstTokens.length ? firstTokens.join(' ') : null,
+    last_name: lastTokens[0] || null,
+    full_name_raw,
+    review_flag: true,
+  };
 }
 
 /** 2–3 capitalized words and no company/trade tokens → treat as a person. */

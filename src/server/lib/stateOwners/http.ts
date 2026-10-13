@@ -81,7 +81,20 @@ export class PacedBoardClient {
 
 export function looksBlocked(status: number, body: string): boolean {
   if (status === 403 || status === 401 || status === 429) return true;
-  return /just a moment|cf-mitigation|access denied|unusual traffic|captcha|enable javascript/i.test(
-    body || '',
-  );
+  const text = body || '';
+  const hasPayload =
+    /Business Information|Governing person|license_number|Qualifying Person|Licensee|owner_name|principalname|OWNER NAME/i.test(
+      text,
+    );
+  // Cloudflare Turnstile on an otherwise empty search shell is a block.
+  if (/cf-turnstile|challenges\.cloudflare\.com\/turnstile/i.test(text) && !hasPayload) return true;
+  // Real board pages often include a reCAPTCHA widget; only treat challenge shells as blocked.
+  if (
+    /just a moment|cf-mitigation|access denied|unusual traffic|please complete the captcha|enable javascript and cookies to continue/i.test(
+      text,
+    )
+  ) {
+    return !hasPayload;
+  }
+  return false;
 }

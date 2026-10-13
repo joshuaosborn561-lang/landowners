@@ -3,7 +3,7 @@ import { looksBlocked, PacedBoardClient } from './http.js';
 import { nameStateCacheKey, readBoardCache, writeBoardCache } from './cache.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
 
-const SEARCH = 'https://www.attorneygeneral.gov/protect-yourself/home-improvement-consumer-protection-act/';
+const SEARCH = 'https://hicsearch.attorneygeneral.gov/';
 
 export function parsePaHicText(text: string, sourceUrl: string): ResolverResult {
   const body = text.replace(/\r/g, '');
