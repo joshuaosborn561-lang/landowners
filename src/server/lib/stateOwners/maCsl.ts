@@ -1,7 +1,8 @@
 import { htmlToText, parseBoardPersonName, splitPersonName } from './names.js';
 import { DESKTOP_UA, looksBlocked, PacedBoardClient } from './http.js';
 import { collectAspNetFields, cookiesFromList, hasAspNetState } from './aspNet.js';
-import { licenseCacheKey, readBoardCache, writeBoardCache } from './cache.js';
+import { licenseCacheKey, nameStateCacheKey, readBoardCache, writeBoardCache } from './cache.js';
+import { resolveMaSos } from './maSos.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
 
 const ACCELA = 'https://elicensing21.mass.gov/CitizenAccess/GeneralProperty/PropertyLookUp.aspx?isLicensee=Y';
@@ -78,18 +79,30 @@ function headers(cookie: string, referer: string, extra: Record<string, string> 
 }
 
 async function accelaSearch(
-  license: string,
+  query: { license?: string; businessName?: string },
   client: PacedBoardClient,
-): Promise<{ status: number; body: string; url: string; blocked: boolean }> {
+): Promise<{ status: number; body: string; url: string; blocked: boolean; query_string: string }> {
+  const query_string = query.license
+    ? `license=${query.license}`
+    : `businessName=${query.businessName || ''}`;
   const got = await client.get(ACCELA);
   if (looksBlocked(got.status, got.body)) {
-    return { status: got.status, body: got.body, url: ACCELA, blocked: true };
+    return { status: got.status, body: got.body, url: ACCELA, blocked: true, query_string };
   }
   const fields = collectAspNetFields(got.body);
   if (!hasAspNetState(fields)) {
-    return { status: got.status, body: got.body, url: ACCELA, blocked: false };
+    return { status: got.status, body: got.body, url: ACCELA, blocked: false, query_string };
   }
-  fields['ctl00$PlaceHolderMain$refLicenseeSearchForm$txtLicenseNumber'] = license;
+  if (query.license) {
+    fields['ctl00$PlaceHolderMain$refLicenseeSearchForm$txtLicenseNumber'] = query.license;
+  }
+  if (query.businessName) {
+    for (const [k] of Object.entries(fields)) {
+      if (/txtBusiName|txtBusinessName|txtLicenseeName|txtGSName/i.test(k)) {
+        fields[k] = query.businessName;
+      }
+    }
+  }
   fields.__EVENTTARGET = 'ctl00$PlaceHolderMain$btnNewSearch';
   fields.__EVENTARGUMENT = '';
   const cookie = cookiesFromList(got.setCookie);
@@ -105,22 +118,30 @@ async function accelaSearch(
     body: posted.body,
     url: posted.url || ACCELA,
     blocked: looksBlocked(posted.status, posted.body),
+    query_string,
   };
 }
 
 async function opsiSearch(
-  license: string,
+  query: { license?: string; businessName?: string },
   client: PacedBoardClient,
-): Promise<{ status: number; body: string; url: string; blocked: boolean }> {
+): Promise<{ status: number; body: string; url: string; blocked: boolean; query_string: string }> {
+  const query_string = query.license
+    ? `license=${query.license}`
+    : `licensee_name=${query.businessName || ''}`;
   const got = await client.get(OPSI);
   if (looksBlocked(got.status, got.body)) {
-    return { status: got.status, body: got.body, url: OPSI, blocked: true };
+    return { status: got.status, body: got.body, url: OPSI, blocked: true, query_string };
   }
   const fields = collectAspNetFields(got.body);
   if (!hasAspNetState(fields)) {
-    return { status: got.status, body: got.body, url: OPSI, blocked: false };
+    return { status: got.status, body: got.body, url: OPSI, blocked: false, query_string };
   }
-  fields.t_web_lookup__license_no = license;
+  if (query.license) fields.t_web_lookup__license_no = query.license;
+  if (query.businessName) {
+    fields.t_web_lookup__licensee_name = query.businessName;
+    fields.t_web_lookup__facility_name = query.businessName;
+  }
   fields.sch_button = 'Search';
   const cookie = cookiesFromList(got.setCookie);
   const posted = await client.post(OPSI, {
@@ -131,11 +152,11 @@ async function opsiSearch(
     body: new URLSearchParams(fields),
   });
   if (looksBlocked(posted.status, posted.body)) {
-    return { status: posted.status, body: posted.body, url: OPSI, blocked: true };
+    return { status: posted.status, body: posted.body, url: OPSI, blocked: true, query_string };
   }
   const detailHref = posted.body.match(/Details\.aspx\?result=([a-f0-9-]+)/i);
   if (!detailHref?.[1]) {
-    return { status: posted.status, body: posted.body, url: posted.url || OPSI, blocked: false };
+    return { status: posted.status, body: posted.body, url: posted.url || OPSI, blocked: false, query_string };
   }
   const detailUrl = `https://madpl.mylicense.com/Verification/Details.aspx?result=${detailHref[1]}`;
   const nextCookie = cookiesFromList(posted.setCookie, cookie);
@@ -146,7 +167,56 @@ async function opsiSearch(
     body: combined,
     url: detailUrl,
     blocked: looksBlocked(detail.status, detail.body),
+    query_string,
   };
+}
+
+async function lookupMaLicense(
+  lead: OwnerLead,
+  query: { license?: string; businessName?: string },
+  client: PacedBoardClient,
+): Promise<ResolverResult> {
+  const cacheKey = query.license
+    ? licenseCacheKey(query.license)
+    : nameStateCacheKey(query.businessName || lead.company_name, 'MA');
+  const cached = await readBoardCache('ma_csl', cacheKey);
+  if (cached?.body != null && cached.http_status != null && !looksBlocked(cached.http_status, cached.body)) {
+    return { ...parseMaCslText(cached.body, ACCELA), cached: true, http_status: cached.http_status };
+  }
+
+  const accela = await accelaSearch(query, client);
+  if (!accela.blocked) {
+    const parsed = parseMaCslText(htmlToText(accela.body), accela.url);
+    if (parsed.people.length) {
+      await writeBoardCache({
+        board: 'ma_csl',
+        cache_key: cacheKey,
+        http_status: accela.status,
+        body: htmlToText(accela.body),
+        query_string: accela.query_string,
+        fetched_url: accela.url,
+      });
+      return { ...parsed, http_status: accela.status };
+    }
+  }
+
+  const opsi = await opsiSearch(query, new PacedBoardClient({ source: 'ma_csl' }));
+  const parsed = opsi.blocked
+    ? { people: [] as ResolverResult['people'], coverage_reason: 'blocked' as const, source: 'ma_csl' as const, source_url: opsi.url }
+    : parseMaCslText(htmlToText(opsi.body), opsi.url);
+  await writeBoardCache({
+    board: 'ma_csl',
+    cache_key: cacheKey,
+    http_status: opsi.status,
+    body: htmlToText(opsi.body),
+    query_string: opsi.query_string,
+    fetched_url: opsi.url,
+  });
+  if (parsed.people.length) return { ...parsed, http_status: opsi.status };
+  if (accela.blocked && opsi.blocked) {
+    return { people: [], coverage_reason: 'blocked', source: 'ma_csl', source_url: opsi.url, blocked: true, http_status: opsi.status };
+  }
+  return { ...parsed, coverage_reason: parsed.coverage_reason || 'not_found', http_status: opsi.status };
 }
 
 export async function resolveMaCsl(
@@ -154,44 +224,32 @@ export async function resolveMaCsl(
   client: PacedBoardClient = new PacedBoardClient({ source: 'ma_csl' }),
 ): Promise<ResolverResult> {
   const license = String(lead.license_number || '').trim();
-  if (!license) {
+  const businessName = lead.company_name?.trim() || '';
+
+  const attempts: ResolverResult[] = [];
+  if (license) attempts.push(await lookupMaLicense(lead, { license }, client));
+  if (businessName && !attempts.some((a) => a.people.length)) {
+    attempts.push(await lookupMaLicense(lead, { businessName }, client));
+  }
+  if (businessName && !attempts.some((a) => a.people.length)) {
+    attempts.push(await resolveMaSos(lead, new PacedBoardClient({ source: 'ma_sos' })));
+  }
+
+  const hit = attempts.find((a) => a.people.length);
+  if (hit) return hit;
+  if (attempts.length && attempts.every((a) => a.coverage_reason === 'blocked')) {
+    return attempts[attempts.length - 1]!;
+  }
+  if (!license && !businessName) {
     return { people: [], coverage_reason: 'no_license_number', source: 'ma_csl', source_url: ACCELA };
   }
-  const key = licenseCacheKey(license);
-  const cached = await readBoardCache('ma_csl', key);
-  if (cached?.body != null && cached.http_status != null) {
-    if (looksBlocked(cached.http_status, cached.body)) {
-      return {
-        people: [],
-        coverage_reason: 'blocked',
-        source: 'ma_csl',
-        source_url: ACCELA,
-        cached: true,
-        blocked: true,
-        http_status: cached.http_status,
-      };
+  return (
+    attempts.find((a) => a.coverage_reason !== 'blocked') ||
+    attempts[attempts.length - 1] || {
+      people: [],
+      coverage_reason: 'not_found',
+      source: 'ma_csl',
+      source_url: ACCELA,
     }
-    return { ...parseMaCslText(cached.body, ACCELA), cached: true, http_status: cached.http_status };
-  }
-
-  const accela = await accelaSearch(license, client);
-  if (accela.blocked) {
-    await writeBoardCache({ board: 'ma_csl', cache_key: key, http_status: accela.status, body: htmlToText(accela.body) });
-    return { people: [], coverage_reason: 'blocked', source: 'ma_csl', source_url: accela.url, blocked: true, http_status: accela.status };
-  }
-  let parsed = parseMaCslText(htmlToText(accela.body), accela.url);
-  if (parsed.people.length) {
-    await writeBoardCache({ board: 'ma_csl', cache_key: key, http_status: accela.status, body: htmlToText(accela.body) });
-    return { ...parsed, http_status: accela.status };
-  }
-
-  // Official OPSI site (CSL / CSSL). Accela Citizen Access now only lists ABCC.
-  const opsi = await opsiSearch(license, client);
-  if (opsi.blocked) {
-    await writeBoardCache({ board: 'ma_csl', cache_key: key, http_status: opsi.status, body: htmlToText(opsi.body) });
-    return { people: [], coverage_reason: 'blocked', source: 'ma_csl', source_url: opsi.url, blocked: true, http_status: opsi.status };
-  }
-  parsed = parseMaCslText(htmlToText(opsi.body), opsi.url);
-  await writeBoardCache({ board: 'ma_csl', cache_key: key, http_status: opsi.status, body: htmlToText(opsi.body) });
-  return { ...parsed, http_status: opsi.status };
+  );
 }

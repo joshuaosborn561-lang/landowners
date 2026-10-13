@@ -1,6 +1,6 @@
-import { hasCompanyWord, htmlToText, parseBoardPersonName, splitPersonName } from './names.js';
+import { hasCompanyWord, htmlToText, namesMatchNormalized, parseBoardPersonName, pickBestNameMatch, splitPersonName } from './names.js';
 import { looksBlocked, PacedBoardClient } from './http.js';
-import { licenseCacheKey, readBoardCache, writeBoardCache } from './cache.js';
+import { licenseCacheKey, nameStateCacheKey, readBoardCache, writeBoardCache } from './cache.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
 
 const SEARCH = 'https://www.tdlr.texas.gov/LicenseSearch/';
@@ -59,11 +59,34 @@ export function parseTxTdlrText(text: string, sourceUrl: string): ResolverResult
   return { people: [person], coverage_reason: null, source: 'tx_tdlr', source_url: sourceUrl, business_phone: phone };
 }
 
+export function txTdlrSearchUrl(opts: {
+  license?: string | null;
+  businessName?: string | null;
+}): { url: string; query_string: string } {
+  const digits = String(opts.license || '').replace(/\D/g, '');
+  if (digits) {
+    const query_string = `license_number=${digits}`;
+    return { url: `${SODA}?${query_string}&$limit=10`, query_string };
+  }
+  const name = String(opts.businessName || '').trim();
+  const like = name.replace(/'/g, "''").toUpperCase();
+  const where = `upper(business_name) like '%${like}%'`;
+  return {
+    url: `${SODA}?$where=${encodeURIComponent(where)}&$limit=25`,
+    query_string: `$where=${where}`,
+  };
+}
+
 /** Official TDLR All Licenses dump on data.texas.gov (`7358-krk7`). */
-export function parseTxTdlrJson(rows: unknown[], sourceUrl: string): ResolverResult {
-  const list = (Array.isArray(rows) ? rows : []).filter(
+export function parseTxTdlrJson(rows: unknown[], sourceUrl: string, companyName?: string): ResolverResult {
+  let list = (Array.isArray(rows) ? rows : []).filter(
     (r): r is Record<string, unknown> => Boolean(r) && typeof r === 'object',
   );
+  if (companyName) {
+    list = list.filter((r) => namesMatchNormalized(String(r.business_name || ''), companyName));
+    const best = pickBestNameMatch(companyName, list, (r) => String(r.business_name || ''));
+    if (best) list = [best, ...list.filter((r) => r !== best)];
+  }
   const trade = list.find((r) => isTdlrTradeType(String(r.license_type || ''))) || null;
   if (!trade) {
     return { people: [], coverage_reason: 'not_found', source: 'tx_tdlr', source_url: sourceUrl };
@@ -102,20 +125,15 @@ export function parseTxTdlrJson(rows: unknown[], sourceUrl: string): ResolverRes
   };
 }
 
-export async function resolveTxTdlr(
+async function fetchTdlr(
   lead: OwnerLead,
-  client: PacedBoardClient = new PacedBoardClient({ source: 'tx_tdlr' }),
+  opts: { license?: string; businessName?: string },
+  client: PacedBoardClient,
 ): Promise<ResolverResult> {
-  const license = String(lead.license_number || '').trim();
-  if (!license) {
-    return { people: [], coverage_reason: 'no_license_number', source: 'tx_tdlr', source_url: SEARCH };
-  }
-  const digits = license.replace(/\D/g, '');
-  if (!digits) {
-    return { people: [], coverage_reason: 'no_license_number', source: 'tx_tdlr', source_url: SEARCH };
-  }
-  const key = licenseCacheKey(digits);
-  const url = `${SODA}?license_number=${encodeURIComponent(digits)}&$limit=10`;
+  const { url, query_string } = txTdlrSearchUrl(opts);
+  const key = opts.license
+    ? licenseCacheKey(opts.license.replace(/\D/g, ''))
+    : nameStateCacheKey(opts.businessName || lead.company_name, 'TX');
   const cached = await readBoardCache('tx_tdlr', key);
   if (cached?.body != null && cached.http_status != null) {
     if (looksBlocked(cached.http_status, cached.body)) {
@@ -130,14 +148,25 @@ export async function resolveTxTdlr(
       };
     }
     try {
-      return { ...parseTxTdlrJson(JSON.parse(cached.body) as unknown[], url), cached: true, http_status: cached.http_status };
+      return {
+        ...parseTxTdlrJson(JSON.parse(cached.body) as unknown[], url, opts.businessName),
+        cached: true,
+        http_status: cached.http_status,
+      };
     } catch {
       return { ...parseTxTdlrText(cached.body, url), cached: true, http_status: cached.http_status };
     }
   }
 
   const got = await client.get(url, { headers: { Accept: 'application/json' } });
-  await writeBoardCache({ board: 'tx_tdlr', cache_key: key, http_status: got.status, body: got.body });
+  await writeBoardCache({
+    board: 'tx_tdlr',
+    cache_key: key,
+    http_status: got.status,
+    body: got.body,
+    query_string,
+    fetched_url: got.url || url,
+  });
   if (looksBlocked(got.status, got.body)) {
     return { people: [], coverage_reason: 'blocked', source: 'tx_tdlr', source_url: url, blocked: true, http_status: got.status };
   }
@@ -145,8 +174,25 @@ export async function resolveTxTdlr(
     return { people: [], coverage_reason: 'not_found', source: 'tx_tdlr', source_url: url, http_status: got.status };
   }
   try {
-    return { ...parseTxTdlrJson(JSON.parse(got.body) as unknown[], url), http_status: got.status };
+    return { ...parseTxTdlrJson(JSON.parse(got.body) as unknown[], url, opts.businessName), http_status: got.status };
   } catch {
     return { ...parseTxTdlrText(htmlToText(got.body), url), http_status: got.status };
   }
+}
+
+export async function resolveTxTdlr(
+  lead: OwnerLead,
+  client: PacedBoardClient = new PacedBoardClient({ source: 'tx_tdlr' }),
+): Promise<ResolverResult> {
+  const license = String(lead.license_number || '').trim();
+  const digits = license.replace(/\D/g, '');
+  if (digits) {
+    const byLicense = await fetchTdlr(lead, { license: digits }, client);
+    if (byLicense.people.length || byLicense.coverage_reason === 'blocked') return byLicense;
+  }
+  const businessName = lead.company_name?.trim() || '';
+  if (businessName) {
+    return fetchTdlr(lead, { businessName }, client);
+  }
+  return { people: [], coverage_reason: digits ? 'not_found' : 'no_license_number', source: 'tx_tdlr', source_url: SEARCH };
 }

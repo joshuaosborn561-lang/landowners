@@ -9,6 +9,7 @@ import {
   contractorsToCsv,
   loadShovelsContractors,
   matchingShovelsContractors,
+  permitStackPlaceId,
   type ContractorQuery,
 } from './shovelsContractors.js';
 
@@ -238,8 +239,10 @@ export async function syncContractorsToSupabase(
 
   const leads = items.map((c) => {
     const chain = nationalChainHit(c);
+    const place = permitStackPlaceId(c.id);
     return {
-    place_id: `shovels:${c.id}`,
+    place_id: place.place_id,
+    ps_id: place.ps_id,
     name: c.business_name || c.name || '',
     owner_name: c.name || '',
     email: c.email || c.primary_email || '',

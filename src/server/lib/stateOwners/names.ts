@@ -97,12 +97,53 @@ export function personKey(name: string): string {
   return String(name || '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+/** Capture the value after a label on the same line or the next line. */
+export function labeledValue(text: string, label: string): string | null {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`\\b${escaped}\\s*:?\\s*([^\\n]{0,160})`, 'i');
+  const cap = String(text || '').replace(/\r/g, '').match(re)?.[1]?.trim() || '';
+  return cap || null;
+}
+
+/** True when normalized names are equal or one contains the other. */
+export function namesMatchNormalized(a: string, b: string): boolean {
+  const left = normalizeCompanyName(a);
+  const right = normalizeCompanyName(b);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  return left.includes(right) || right.includes(left);
+}
+
+export function pickBestNameMatch<T>(
+  target: string,
+  items: T[],
+  nameOf: (item: T) => string,
+): T | null {
+  const key = normalizeCompanyName(target);
+  if (!key) return null;
+  let best: T | null = null;
+  let bestScore = 0;
+  for (const item of items) {
+    const hit = normalizeCompanyName(nameOf(item));
+    if (!hit) continue;
+    let score = 0;
+    if (hit === key) score = 100;
+    else if (hit.includes(key) || key.includes(hit)) score = 80;
+    if (score > bestScore) {
+      bestScore = score;
+      best = item;
+    }
+  }
+  return bestScore >= 70 ? best : null;
+}
+
 export function htmlToText(html: string): string {
   return String(html || '')
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|tr|h[1-6]|li|dt|dd|table|section|header|td|th)>/gi, '\n')
+    .replace(/<(td|tr|div|p|br)\b[^>]*>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')

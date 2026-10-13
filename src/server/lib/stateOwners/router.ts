@@ -5,7 +5,7 @@ import { resolveNycDob } from './nycDob.js';
 import { resolveNyDos } from './nyDos.js';
 import { resolveMaCsl } from './maCsl.js';
 import { resolveMnDli } from './mnDli.js';
-import { resolvePaHic } from './paHic.js';
+import { resolvePaDos } from './paDos.js';
 import { resolveTxTdlr } from './txTdlr.js';
 import { resolveTxSos } from './txSosAdapter.js';
 import { resolveSunbiz } from './sunbizAdapter.js';
@@ -46,7 +46,7 @@ export async function resolveLeadByState(lead: OwnerLead): Promise<ResolverResul
     case 'MN':
       return resolveMnDli(lead);
     case 'PA':
-      return resolvePaHic(lead);
+      return resolvePaDos(lead);
     case 'TX':
       return resolveTexas(lead);
     case 'FL':
@@ -75,7 +75,7 @@ export function sourceForState(state: string, city?: string | null): BoardSource
   if (st === 'NY') return isNycCity(city) ? 'nyc_dob' : 'ny_dos';
   if (st === 'MA') return 'ma_csl';
   if (st === 'MN') return 'mn_dli';
-  if (st === 'PA') return 'pa_hic';
+  if (st === 'PA') return 'pa_dos';
   if (st === 'TX') return 'tx_tdlr';
   if (st === 'FL') return 'sunbiz';
   return 'cslb';

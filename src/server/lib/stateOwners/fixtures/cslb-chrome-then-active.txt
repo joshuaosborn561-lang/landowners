@@ -1,0 +1,20 @@
+Check A License - License Detail -CSLB
+Skip to Main Content
+The license status check provides information taken from the CSLB license database. Before relying on this information, you should be aware of the following limitations.
+Business Information
+ ACME WIRING INC
+100 MAIN ST
+SACRAMENTO, CA 95814
+Business Phone Number:(916) 555-0100
+ Entity
+ Corporation
+ Issue Date
+ 08/27/2021
+ Expire Date
+ 09/30/2028
+ License Status
+ This license is current and active.
+ All information below should be reviewed.
+ Classifications
+ C10 - ELECTRICAL
+ The qualifying individual JANE Q PUBLIC certified that he/she owns 10 percent or more of the voting stock/membership interest of this company; therefore, the Bond of Qualifying Individual is not required.

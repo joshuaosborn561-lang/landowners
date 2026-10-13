@@ -1,6 +1,5 @@
-import { htmlToText, splitPersonName } from './names.js';
-import { looksBlocked, PacedBoardClient } from './http.js';
-import { nameStateCacheKey, readBoardCache, writeBoardCache } from './cache.js';
+import { splitPersonName } from './names.js';
+import type { PacedBoardClient } from './http.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
 
 /**
@@ -45,38 +44,19 @@ export function parsePaHicText(text: string, sourceUrl: string): ResolverResult 
   return { people: [person], coverage_reason: null, source: 'pa_hic', source_url: sourceUrl };
 }
 
+/**
+ * Disabled. hicsearch.attorneygeneral.gov is Turnstile-gated.
+ * Do not fetch until a solving service is added. PA routes to PA DOS instead.
+ */
 export async function resolvePaHic(
-  lead: OwnerLead,
-  client: PacedBoardClient = new PacedBoardClient({ source: 'pa_hic' }),
+  _lead?: OwnerLead,
+  _client?: PacedBoardClient,
 ): Promise<ResolverResult> {
-  if (!lead.company_name?.trim()) {
-    return { people: [], coverage_reason: 'not_found', source: 'pa_hic', source_url: PA_HIC_SEARCH };
-  }
-  const url = `${PA_HIC_SEARCH}?s=${encodeURIComponent(lead.company_name)}`;
-  const key = nameStateCacheKey(lead.company_name, 'PA');
-  const cached = await readBoardCache('pa_hic', key);
-  if (cached?.body != null && cached.http_status != null) {
-    if (looksBlocked(cached.http_status, cached.body) || /cf-turnstile/i.test(cached.body)) {
-      return {
-        people: [],
-        coverage_reason: 'blocked',
-        source: 'pa_hic',
-        source_url: url,
-        cached: true,
-        blocked: true,
-        http_status: cached.http_status,
-      };
-    }
-    return { ...parsePaHicText(cached.body, url), cached: true, http_status: cached.http_status };
-  }
-  const got = await client.get(url);
-  const text = htmlToText(got.body);
-  await writeBoardCache({ board: 'pa_hic', cache_key: key, http_status: got.status, body: text });
-  if (looksBlocked(got.status, got.body) || /cf-turnstile/i.test(got.body)) {
-    return { people: [], coverage_reason: 'blocked', source: 'pa_hic', source_url: url, blocked: true, http_status: got.status };
-  }
-  if (got.status !== 200) {
-    return { people: [], coverage_reason: 'not_found', source: 'pa_hic', source_url: url, http_status: got.status };
-  }
-  return { ...parsePaHicText(text, url), http_status: got.status };
+  return {
+    people: [],
+    coverage_reason: 'blocked',
+    source: 'pa_hic',
+    source_url: PA_HIC_SEARCH,
+    blocked: true,
+  };
 }

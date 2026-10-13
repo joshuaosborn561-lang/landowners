@@ -4,14 +4,24 @@ import {
   hasCompanyWord,
   htmlToText,
   isNycCity,
+  labeledValue,
   looksLikeSolePropPerson,
+  namesMatchNormalized,
   normalizeCompanyName,
   normalizeState,
   parseBoardPersonName,
   personKey,
+  pickBestNameMatch,
   splitPersonName,
 } from './names.js';
-import { looksBlocked } from './http.js';
+import { decodeCacheBody, encodeCacheBody } from './cache.js';
+import { parseMaSosText } from './maSos.js';
+import { parsePaDosText } from './paDos.js';
+import { nycDobSearchUrl } from './nycDob.js';
+import { nyDosSearchUrl } from './nyDos.js';
+import { txTdlrSearchUrl } from './txTdlr.js';
+import { looksBlocked, setBoardFetch } from './http.js';
+import { resolveMaCsl } from './maCsl.js';
 import { parseNycDobJson } from './nycDob.js';
 import { parseWaLniJson, parseWaLniText } from './waLni.js';
 import { parseTxTdlrJson, parseTxTdlrText } from './txTdlr.js';
@@ -97,6 +107,53 @@ describe('htmlToText', () => {
     assert.match(text, /Business Information/);
     assert.match(text, /ACME INC/);
   });
+
+  it('turns </td> </tr> </div> </p> and <br> into newlines', () => {
+    const text = htmlToText(
+      '<tr><td>License Status</td><td>This license is current and active.</td></tr><div>Entity</div><p>Corporation</p>Business Phone<br>(916) 555-0100',
+    );
+    assert.match(text, /License Status\n+This license is current and active/);
+    assert.match(text, /Entity\n+Corporation/);
+    assert.match(text, /Business Phone\n+\(916\) 555-0100/);
+  });
+});
+
+describe('labeledValue', () => {
+  it('captures a value on the same line or the next line', () => {
+    assert.equal(labeledValue('License Status This license is current and active.', 'License Status'), 'This license is current and active.');
+    assert.equal(labeledValue('License Status\n This license is current and active.', 'License Status'), 'This license is current and active.');
+  });
+});
+
+describe('normalized name match', () => {
+  it('matches after stripping punctuation, legal suffixes, and DBA tails', () => {
+    assert.equal(namesMatchNormalized('Smith HVAC, L.L.C. DBA Cool Air', 'SMITH HVAC'), true);
+    assert.equal(pickBestNameMatch('Acme Builders LLC', [{ n: 'ACME BUILDERS' }, { n: 'OTHER CO' }], (r) => r.n)?.n, 'ACME BUILDERS');
+    assert.equal(pickBestNameMatch('Acme', [{ n: 'ZETA ROOFING' }], (r) => r.n), null);
+  });
+});
+
+describe('cache query/url envelope', () => {
+  it('round-trips query string and fetched URL without leaking into parse text', () => {
+    const wrapped = encodeCacheBody('License Status This license is current and active.', {
+      query_string: 'searchName=ACME',
+      fetched_url: 'https://example.test/search?q=ACME',
+    });
+    const decoded = decodeCacheBody(wrapped);
+    assert.equal(decoded.query_string, 'searchName=ACME');
+    assert.equal(decoded.fetched_url, 'https://example.test/search?q=ACME');
+    assert.equal(decoded.text, 'License Status This license is current and active.');
+  });
+});
+
+describe('name-search URLs', () => {
+  it('logs the exact query string for NYC / NY DOS / TDLR', () => {
+    assert.equal(nycDobSearchUrl({ license: '12345' }).query_string, 'license_number=12345');
+    assert.match(nycDobSearchUrl({ businessName: "O'BRIEN HVAC LLC" }).query_string, /business_name/i);
+    assert.equal(nyDosSearchUrl('Smith HVAC, LLC DBA Cool').query_string, 'searchName=SMITH HVAC');
+    assert.equal(txTdlrSearchUrl({ license: 'TECL-009' }).query_string, 'license_number=009');
+    assert.match(txTdlrSearchUrl({ businessName: 'Smith HVAC LLC' }).query_string, /SMITH HVAC LLC/i);
+  });
 });
 
 describe('other board parsers', () => {
@@ -145,6 +202,8 @@ describe('other board parsers', () => {
     );
     assert.equal(parsePaHicText('Owner: RILEY COHEN\n', 'u').people[0]?.source, 'pa_hic');
     assert.equal(parsePaHicText('<div class="cf-turnstile"></div>', 'u').coverage_reason, 'blocked');
+    assert.equal(parsePaDosText('Entity Name: ACME BUILDERS LLC\nPresident: RILEY COHEN\n', 'u', 'Acme Builders LLC').people[0]?.source, 'pa_dos');
+    assert.equal(parseMaSosText('Entity Name: ACME BUILDERS LLC\nPresident: PAT KIM\n', 'u', 'Acme Builders LLC').people[0]?.source, 'ma_sos');
   });
 
   it('ignores Accela chrome that only says Licensee', () => {
@@ -188,16 +247,66 @@ describe('other board parsers', () => {
     assert.equal(result.people[0]?.business_phone, '2065550100');
   });
 
+  it('matches a NYC business_name after suffix/DBA normalize', () => {
+    const result = parseNycDobJson(
+      [
+        {
+          first_name: 'GEORGE',
+          last_name: 'PAPADIONISOPOULOS',
+          license_status: 'ACTIVE',
+          business_name: 'ACME BUILDERS LLC DBA ACE',
+          business_phone_number: '3476547642',
+        },
+      ],
+      'u',
+      'Acme Builders, Inc.',
+    );
+    assert.equal(result.people.length, 1);
+    assert.equal(result.coverage_reason, null);
+  });
+
   it('joins a MN business to a unique qualifying person at the same address', () => {
     const csv = [
       'Bus_Pers,License_Type,License_Subtype,Name,DBA_Name,Addr1,Addr2,City,St,Zip,Phone_No,Email_Address,Lic_Number,Status,Orig_Date,Exp_Date,Enforcement_Action,Renewal_in_Progress',
       'Business,Residential Contractors,Residential Building Contractor,ACME BUILDERS LLC,,100 MAIN ST,,ST PAUL,MN,55101,6515550100,,BC000111,Issued,,,,',
       'Personal,Residential Contractors,Qualifying Builder,"JONES, PAT",,100 MAIN ST,,ST PAUL,MN,55101,6515550100,,QB000111,Issued,,,,',
     ].join('\n');
-    const result = parseMnDliCsv(csv, 'Acme Builders LLC', 'u');
+    const result = parseMnDliCsv(csv, 'Acme Builders LLC DBA Ace Construction', 'u');
     assert.equal(result.people[0]?.role, 'qualifying_individual');
     assert.equal(result.people[0]?.last_name, 'JONES');
     assert.equal(result.people[0]?.confidence, 'medium');
+  });
+});
+
+describe('MA license miss routes to SOS', () => {
+  it('does not stop on Accela/OPSI block when SOS has officers', async () => {
+    setBoardFetch(async (input) => {
+      const url = String(input);
+      if (url.includes('elicensing21.mass.gov')) {
+        return new Response('Access Denied', { status: 404 });
+      }
+      if (url.includes('madpl.mylicense.com')) {
+        return new Response('Access Denied', { status: 403 });
+      }
+      if (url.includes('corp.sec.state.ma.us')) {
+        return new Response('Entity Name: ACME BUILDERS LLC\nPresident: PAT KIM\n', { status: 200 });
+      }
+      return new Response('no', { status: 404 });
+    });
+    try {
+      const result = await resolveMaCsl({
+        list_id: 'x',
+        lead_id: 1,
+        company_name: 'Acme Builders LLC',
+        state: 'MA',
+      });
+      assert.equal(result.source, 'ma_sos');
+      assert.equal(result.people.length, 1);
+      assert.equal(result.people[0]?.last_name, 'KIM');
+      assert.equal(result.coverage_reason, null);
+    } finally {
+      setBoardFetch(null);
+    }
   });
 });
 

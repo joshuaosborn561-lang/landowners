@@ -2,6 +2,18 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { isNationalChain, nationalChainHit } from '../lib/nationalChain.js';
 
+/** PermitStack / Shovels id → scrape_leads.place_id. */
+export function permitStackPlaceId(psId: string | null | undefined): {
+  place_id: string | null;
+  ps_id: string | null;
+} {
+  const raw = String(psId || '').trim();
+  if (!raw) return { place_id: null, ps_id: null };
+  const id = raw.startsWith('shovels:') ? raw.slice('shovels:'.length) : raw;
+  if (!id) return { place_id: null, ps_id: null };
+  return { place_id: `shovels:${id}`, ps_id: id };
+}
+
 export interface ShovelsContractor {
   id: string;
   name: string | null;

@@ -17,6 +17,7 @@ export const COVERAGE_REASONS = [
   'no_license_number',
   'sole_prop_dba',
   'blocked',
+  'parse_error',
 ] as const;
 
 export type CoverageReason = (typeof COVERAGE_REASONS)[number];
@@ -30,8 +31,10 @@ export const BOARD_SOURCES = [
   'nyc_dob',
   'ny_dos',
   'ma_csl',
+  'ma_sos',
   'mn_dli',
   'pa_hic',
+  'pa_dos',
 ] as const;
 
 export type BoardSource = (typeof BOARD_SOURCES)[number];
