@@ -142,4 +142,13 @@ describe('person-style CPA entity pick', () => {
     ];
     assert.equal(pickBestEntity('TOM PLUMBER INC', hits)?.taxpayerId, '9');
   });
+
+  it('matches after stripping punctuation, legal suffixes, and DBA tails', () => {
+    const hits = [
+      { taxpayerId: '11', name: 'SMITH HVAC L.L.C. DBA COOL AIR' },
+      { taxpayerId: '12', name: 'UNRELATED MECHANICAL INC' },
+    ];
+    assert.equal(pickBestEntity('Smith HVAC, LLC', hits)?.taxpayerId, '11');
+    assert.equal(pickBestEntity('J & J ELECTRIC INC', [{ taxpayerId: '21', name: 'J AND J ELECTRIC, INC.' }])?.taxpayerId, '21');
+  });
 });

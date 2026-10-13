@@ -1,7 +1,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { config } from '../config.js';
 
-/** Active app schema (legacy `property_pm_finder` tables are unused by Permit & Parcel). */
+/** Active app schema (legacy `property_pm_finder` tables are unused by Permits MCP). */
 const SCHEMA = 'permit_parcel';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

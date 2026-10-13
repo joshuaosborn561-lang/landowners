@@ -28,6 +28,7 @@ import {
   recomputeOfficerDialStatus,
   scoreCallingList,
 } from '../server/services/enrichCallingList.js';
+import { matchStateOwners } from '../server/services/matchStateOwners.js';
 import { buildOperators } from '../server/services/operators.js';
 import { parcelsToCsv } from '../server/services/parcels.js';
 import { loadCounty } from '../server/parcels/loadCounty.js';
@@ -130,7 +131,7 @@ async function healthPayload() {
   const shovelsKey = await getShovelsKeyStatus();
   return {
     ok: true,
-    product: 'Permit & Parcel MCP',
+    product: 'Permits MCP',
     demoMode: config.demoMode,
     supabaseConfigured: hasSupabase(),
     supabase_project: target.supabase_project,
@@ -147,20 +148,21 @@ async function healthPayload() {
     when_not_to_use:
       'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, paid SOS unmasking, bulk row dumps in chat.',
     how_to_use:
-      'Live: permitstack_pull / shovels_pull into the contractor store (then permits_contractors_query). DFW cache still free via save_calling_list. Enrich: score → match_texas_officers or match_florida_officers → lookup_line_type → owner_people_search. Never echo API keys.',
+      'Live: permitstack_pull / shovels_pull into the contractor store (then permits_contractors_query). DFW cache still free via save_calling_list. Enrich: score → match_state_owners (or match_texas_officers / match_florida_officers) → lookup_line_type → owner_people_search. Never echo API keys.',
     removed:
       'pmf_parse_query, pmf_confirm_run, Propwire → LoopNet → Google owner cascade (broken; not repaired).',
   };
 }
 
-export function createPermitParcelMcpServer(): McpServer {
+export function createPermitsMcpServer(): McpServer {
   const server = new McpServer(
     {
+      // Protocol id stays permits-gcs so existing Claude/Cursor connectors keep working.
       name: 'permits-gcs',
-      version: '2.0.0',
-      title: 'Permit & Parcel MCP (permits-GCs)',
+      version: '2.1.0',
+      title: 'Permits MCP',
       description:
-        'USE FOR: (1) Live PermitStack commercial GC pulls for ANY US market via permitstack_pull_calling_list (alias shovels_pull_calling_list); (2) free DFW cache (~6,124); (3) request estimates; (4) Supabase calling lists; (5) DCAD/TAD/CCAD parcels + build_operators. The PermitStack key is already configured — do not ask Cayden to rotate it. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, paid SOS. Never echo a full API key.',
+        'USE FOR: (1) Live PermitStack commercial GC pulls for ANY US market via permitstack_pull_calling_list (alias shovels_pull_calling_list); (2) free DFW cache (~6,124); (3) request estimates; (4) Supabase calling lists; (5) state owner lookup (match_state_owners) for Email Finder name_company mode; (6) DCAD/TAD/CCAD parcels + build_operators. Server id alias: permits-gcs. The PermitStack key is already configured — do not ask Cayden to rotate it. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, paid SOS, PDL. Never echo a full API key.',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );
@@ -169,8 +171,8 @@ export function createPermitParcelMcpServer(): McpServer {
     'pp_guide',
     'permit-parcel://guide',
     {
-      title: 'Permit & Parcel operator guide',
-      description: 'Full manual: Shovels GCs, credit estimates, calling lists, parcels, sync rules.',
+      title: 'Permits MCP operator guide',
+      description: 'Full manual: Shovels GCs, credit estimates, calling lists, state owner lookup, parcels, sync rules.',
       mimeType: 'text/markdown',
     },
     async (uri) => ({
@@ -182,7 +184,7 @@ export function createPermitParcelMcpServer(): McpServer {
     'pp_when_to_use',
     'permit-parcel://when-to-use',
     {
-      title: 'When to use Permit & Parcel (quick)',
+      title: 'When to use Permits MCP (quick)',
       description: 'Yes/no decision + money/context gates.',
       mimeType: 'text/markdown',
     },
@@ -1151,6 +1153,67 @@ WHAT IT DOES: Sunbiz entity-name search + officer/director roster. Public HTML i
     },
   );
 
+  const stateOwnerSchema = {
+    list_id: z.string().min(1),
+    states: z.array(z.string()).optional().describe('Optional state codes (CA, WA, NY, MA, MN, PA, TX, FL).'),
+    max_rows: z.number().int().min(1).max(100).optional().describe('Default 25. Dry runs cap at 25.'),
+    dry_run: z.boolean().optional().describe('Parse and count only. Does not write contact_enrichment. Default false.'),
+  };
+
+  server.registerTool(
+    'match_state_owners',
+    {
+      title: 'Match state license-board owners (any list)',
+      description: `WHEN TO USE: PermitStack contractor has no email or no contact name. Get the owner's name (and published business phone) from the state license board / corp registry for Email Finder Waterfall name_company mode.
+WHAT IT DOES: Routes each lead by state to CSLB / L&I / NYC DOB / NY DOS / MA CSL / MN DLI / PA HIC / TX TDLR+SOS / Sunbiz. Writes permit_parcel.contact_enrichment. Returns counts, job_id, per-state hit rates, and up to 10 nameless samples (role + source). Never PDL. Never dump names.`,
+      inputSchema: stateOwnerSchema,
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await matchStateOwners({ ...args, tool: 'match_state_owners' }));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'match_state_owners failed');
+      }
+    },
+  );
+
+  const perState: Array<{
+    name: 'match_california_owners' | 'match_washington_owners' | 'match_new_york_owners' | 'match_massachusetts_owners' | 'match_minnesota_owners' | 'match_pennsylvania_owners' | 'match_texas_tdlr_owners';
+    title: string;
+    board: string;
+  }> = [
+    { name: 'match_california_owners', title: 'California CSLB owners', board: 'cslb' },
+    { name: 'match_washington_owners', title: 'Washington L&I owners', board: 'wa_lni' },
+    { name: 'match_new_york_owners', title: 'NYC DOB / NY DOS owners', board: 'nyc_dob/ny_dos' },
+    { name: 'match_massachusetts_owners', title: 'Massachusetts CSL/HIC owners', board: 'ma_csl' },
+    { name: 'match_minnesota_owners', title: 'Minnesota DLI qualifying person', board: 'mn_dli' },
+    { name: 'match_pennsylvania_owners', title: 'Pennsylvania HIC owners', board: 'pa_hic' },
+    { name: 'match_texas_tdlr_owners', title: 'Texas TDLR (+ SOS fallback) owners', board: 'tx_tdlr' },
+  ];
+  for (const spec of perState) {
+    server.registerTool(
+      spec.name,
+      {
+        title: spec.title,
+        description: `WHEN TO USE: Same as match_state_owners but only ${spec.board}. Keep callable on its own. Counts / job_id / nameless samples only.`,
+        inputSchema: {
+          list_id: z.string().min(1),
+          max_rows: z.number().int().min(1).max(100).optional(),
+          dry_run: z.boolean().optional(),
+        },
+        annotations: { readOnlyHint: false, openWorldHint: true },
+      },
+      async (args) => {
+        try {
+          return jsonResult(await matchStateOwners({ ...args, tool: spec.name }));
+        } catch (err) {
+          return errorResult(err instanceof Error ? err.message : `${spec.name} failed`);
+        }
+      },
+    );
+  }
+
   server.registerTool(
     'recompute_officer_dial_status',
     {
@@ -1370,7 +1433,7 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
           role: 'user',
           content: {
             type: 'text',
-            text: `Permit & Parcel MCP — PermitStack contractors.
+            text: `Permits MCP — PermitStack contractors.
 Request: "${request || 'Summarize the contractor file'}"
 1) Do not ask anyone to rotate the PermitStack key. It is already on the server.
 2) Any US market (East/West coast, city, state): permitstack_pull_calling_list — estimate first, then confirm=true.
@@ -1399,7 +1462,7 @@ Request: "${request || 'Summarize the contractor file'}"
           role: 'user',
           content: {
             type: 'text',
-            text: `Permit & Parcel MCP — PermitStack key.
+            text: `Permits MCP — PermitStack key.
 Request: "${request || 'Is the PermitStack key set?'}"
 1) health or permitstack_api_key_status — show only the masked fingerprint
 2) Do NOT ask Cayden to paste or rotate the key. It is already configured.
@@ -1425,7 +1488,7 @@ Request: "${request || 'Is the PermitStack key set?'}"
           role: 'user',
           content: {
             type: 'text',
-            text: `Permit & Parcel MCP — saved calling lists.
+            text: `Permits MCP — saved calling lists.
 Request: "${request || 'Show Cayden calling lists with phone numbers'}"
 1) If they asked Shovels credit cost first, call shovels_estimate_credits
 2) list_calling_lists (owner=cayden if named)
@@ -1452,7 +1515,7 @@ Request: "${request || 'Show Cayden calling lists with phone numbers'}"
           role: 'user',
           content: {
             type: 'text',
-            text: `Permit & Parcel MCP — owner-cell enrichment.
+            text: `Permits MCP — owner-cell enrichment.
 Request: "${request || 'Get Cayden owner cells on his latest list'}"
 1) enrichment_keys_status — if Veriphone or Texas CPA missing, have Cayden paste via set_enrichment_api_key. Never echo keys.
 2) list_calling_lists(owner=cayden) then score_calling_list(only_unscored=true) until remaining_unscored=0
@@ -1481,7 +1544,7 @@ Request: "${request || 'Get Cayden owner cells on his latest list'}"
           role: 'user',
           content: {
             type: 'text',
-            text: `Permit & Parcel MCP — appraisal parcels.
+            text: `Permits MCP — appraisal parcels.
 Request: "${request || 'Summarize commercial parcels'}"
 1) parcels_counties
 2) parcels_summary, parcels_count, or parcels_owners_count (counts only; owners are distinct mailing addresses)
@@ -1498,5 +1561,6 @@ Propwire cascade is removed — do not offer it.`,
   return server;
 }
 
-/** @deprecated alias — old Property PM Finder name */
-export const createPmFinderMcpServer = createPermitParcelMcpServer;
+/** @deprecated alias — old Property PM Finder / Permit & Parcel name */
+export const createPermitParcelMcpServer = createPermitsMcpServer;
+export const createPmFinderMcpServer = createPermitsMcpServer;

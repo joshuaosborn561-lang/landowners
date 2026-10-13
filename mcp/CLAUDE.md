@@ -1,4 +1,4 @@
-# Permit & Parcel MCP (`permits-GCs`)
+# Permits MCP (`permits-gcs`)
 
 Repo: https://github.com/joshuaosborn561-lang/permits-GCs
 

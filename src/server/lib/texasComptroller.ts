@@ -247,14 +247,21 @@ export function namesLooselyMatch(a: string, b: string): boolean {
   return false;
 }
 
-function companyKey(s: string): string {
+/** Strip punctuation, legal suffixes, and a trailing "DBA …". Medium-confidence entity match. */
+export function normalizeCompanyName(s: string): string {
   return s
     .toUpperCase()
     .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\bD\s*\.?\s*B\s*\.?\s*A\.?\s+.+$/i, ' ')
+    .replace(/&/g, ' AND ')
     .replace(/[^A-Z0-9 ]+/g, ' ')
-    .replace(/\b(THE|LLC|L L C|INC|INCORPORATED|LTD|LP|LLP|CO|COMPANY|CORP|CORPORATION)\b/g, ' ')
+    .replace(/\b(THE|A|AN|LLC|L L C|INC|INCORPORATED|LTD|LP|LLP|PLLC|PC|PA|CO|COMPANY|CORP|CORPORATION)\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function companyKey(s: string): string {
+  return normalizeCompanyName(s);
 }
 
 const BUSINESS_HINT =
@@ -273,12 +280,16 @@ function scoreFranchiseHit(target: string, hitName: string, personStyle: boolean
   const key = companyKey(hitName);
   if (!key) return 0;
   if (key === target) return 100;
+  const normHit = normalizeCompanyName(hitName);
+  const normTarget = target;
+  if (normHit && normHit === normTarget) return 70;
   if (personStyle) {
     // Person-style company names must not match "NAME AND PARTNER" / "NAME TRUCKING LLC".
     if (target.length >= 8 && levenshtein(key, target) <= 1) return 95;
     return 0;
   }
   if (key.includes(target) || target.includes(key)) return 80;
+  if (normHit.includes(normTarget) || normTarget.includes(normHit)) return 70;
   const words = target.split(' ').filter((w) => w.length > 2);
   return words.filter((w) => key.includes(w)).length * 10;
 }
