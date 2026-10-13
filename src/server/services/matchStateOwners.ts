@@ -226,6 +226,7 @@ export async function matchStateOwners(opts: StateOwnerJobOpts): Promise<Record<
 
   const resolve = resolverForTool(tool) ?? resolveLeadByState;
   const byState: Record<string, StateStats> = {};
+  const statusHistogram: Record<string, number> = {};
   const results: ResolverResult[] = [];
   const seen = new Set<string>();
   let named = 0;
@@ -240,6 +241,10 @@ export async function matchStateOwners(opts: StateOwnerJobOpts): Promise<Record<
       const gotName = result.people.length > 0;
       if (gotName) named += 1;
       bump(byState, st, gotName, result.coverage_reason);
+      const phrase = result.license_status
+        ? result.license_status.replace(/\s+/g, ' ').trim()
+        : `(${result.coverage_reason || 'named_no_status'})`;
+      statusHistogram[phrase] = (statusHistogram[phrase] || 0) + 1;
       if (!dryRun) {
         written += await persistOwner({ ...lead, list_id: listId }, result, seen);
       } else {
@@ -274,6 +279,7 @@ export async function matchStateOwners(opts: StateOwnerJobOpts): Promise<Record<
     written: dryRun ? 0 : written,
     remaining: Math.max(0, leads.length - results.length),
     hit_rate_by_state: byState,
+    status_histogram: statusHistogram,
     sample: sampleOwnerRows(results, 10),
     stopped,
     assistant_instructions: dryRun

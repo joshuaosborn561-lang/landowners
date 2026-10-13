@@ -6,9 +6,55 @@ import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
 const CSLB_ORIGIN = 'https://www.cslb.ca.gov';
 
 export function normalizeCslbLicense(raw: string | null | undefined): string | null {
-  const digits = String(raw || '').replace(/\D/g, '').replace(/^0+/, '');
+  // Excel/JSON often stores 981116 as "981116.0". Stripping all non-digits
+  // would look up 9811160 — the wrong license.
+  const stripped = String(raw || '').trim().replace(/\.0+$/, '');
+  const digits = stripped.replace(/\D/g, '').replace(/^0+/, '');
   if (digits.length < 5 || digits.length > 8) return null;
   return digits;
+}
+
+const STATUS_CHROME =
+  /check provides|before relying|limitations|license database|skip to main|check a license/i;
+const STATUS_ACTIVE = /current\s+and\s+active|\bthis license is active\b/i;
+const STATUS_INACTIVE = /suspen|expired|revoked|cancel+ed|inactive|lapsed|surrendered/i;
+
+function normalizeStatusPhrase(raw: string): string {
+  return raw.replace(/\u00a0/g, ' ').replace(/[ \t]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Real CSLB status sentence — skip the "License Status check provides…" help chrome. */
+export function extractCslbLicenseStatus(text: string): string | null {
+  const body = String(text || '').replace(/\r/g, '').replace(/\u00a0/g, ' ');
+  const hits: string[] = [];
+  const re = /License Status\s*:?\s*([^\n]{0,160})/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body))) {
+    const cap = normalizeStatusPhrase(m[1] || '');
+    if (!cap || STATUS_CHROME.test(cap)) continue;
+    hits.push(cap);
+  }
+  const preferred = hits.find((h) => STATUS_ACTIVE.test(h) || STATUS_INACTIVE.test(h) || /this license is/i.test(h));
+  if (preferred) return preferred;
+  const fallback =
+    body.match(/This license is current and active\.?/i) ||
+    body.match(/License is under suspension[^\n]{0,160}/i) ||
+    body.match(/This license (?:has )?expired[^\n]{0,80}/i) ||
+    body.match(/This license (?:has been )?(?:revoked|cancelled|canceled|surrendered)[^\n]{0,80}/i);
+  if (fallback?.[0]) return normalizeStatusPhrase(fallback[0]);
+  return hits[0] || null;
+}
+
+export function isCslbActiveStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  const n = normalizeStatusPhrase(status);
+  if (STATUS_CHROME.test(n)) return false;
+  return STATUS_ACTIVE.test(n);
+}
+
+export function isCslbDetailPage(text: string): boolean {
+  const body = String(text || '');
+  return /Business Information/i.test(body) && /License Status/i.test(body);
 }
 
 export interface CslbParsed {
@@ -55,10 +101,10 @@ export function parseCslbText(text: string, sourceUrl = ''): CslbParsed {
   const phoneLine = lineStarting(body, 'Business Phone Number:');
   const business_phone = phoneFromLine(phoneLine);
   const entity = labeledValue(body, 'Entity');
-  const statusLine = labeledValue(body, 'License Status');
+  const statusLine = extractCslbLicenseStatus(body);
   const license_status = statusLine;
   const missingStatus = !statusLine;
-  const active = /current and active/i.test(statusLine || '');
+  const active = isCslbActiveStatus(statusLine);
 
   const people: OwnerPerson[] = [];
   const qi =
