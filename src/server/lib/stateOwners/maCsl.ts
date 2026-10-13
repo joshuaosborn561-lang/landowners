@@ -180,59 +180,30 @@ async function lookupMaLicense(
     ? licenseCacheKey(query.license)
     : nameStateCacheKey(query.businessName || lead.company_name, 'MA');
   const cached = await readBoardCache('ma_csl', cacheKey);
-  if (cached?.body != null && cached.http_status != null) {
-    if (looksBlocked(cached.http_status, cached.body)) {
-      return {
-        people: [],
-        coverage_reason: 'blocked',
-        source: 'ma_csl',
-        source_url: ACCELA,
-        cached: true,
-        blocked: true,
-        http_status: cached.http_status,
-      };
-    }
+  if (cached?.body != null && cached.http_status != null && !looksBlocked(cached.http_status, cached.body)) {
     return { ...parseMaCslText(cached.body, ACCELA), cached: true, http_status: cached.http_status };
   }
 
   const accela = await accelaSearch(query, client);
-  if (accela.blocked) {
-    await writeBoardCache({
-      board: 'ma_csl',
-      cache_key: cacheKey,
-      http_status: accela.status,
-      body: htmlToText(accela.body),
-      query_string: accela.query_string,
-      fetched_url: accela.url,
-    });
-    return { people: [], coverage_reason: 'blocked', source: 'ma_csl', source_url: accela.url, blocked: true, http_status: accela.status };
-  }
-  let parsed = parseMaCslText(htmlToText(accela.body), accela.url);
-  if (parsed.people.length) {
-    await writeBoardCache({
-      board: 'ma_csl',
-      cache_key: cacheKey,
-      http_status: accela.status,
-      body: htmlToText(accela.body),
-      query_string: accela.query_string,
-      fetched_url: accela.url,
-    });
-    return { ...parsed, http_status: accela.status };
+  if (!accela.blocked) {
+    const parsed = parseMaCslText(htmlToText(accela.body), accela.url);
+    if (parsed.people.length) {
+      await writeBoardCache({
+        board: 'ma_csl',
+        cache_key: cacheKey,
+        http_status: accela.status,
+        body: htmlToText(accela.body),
+        query_string: accela.query_string,
+        fetched_url: accela.url,
+      });
+      return { ...parsed, http_status: accela.status };
+    }
   }
 
-  const opsi = await opsiSearch(query, client);
-  if (opsi.blocked) {
-    await writeBoardCache({
-      board: 'ma_csl',
-      cache_key: cacheKey,
-      http_status: opsi.status,
-      body: htmlToText(opsi.body),
-      query_string: opsi.query_string,
-      fetched_url: opsi.url,
-    });
-    return { people: [], coverage_reason: 'blocked', source: 'ma_csl', source_url: opsi.url, blocked: true, http_status: opsi.status };
-  }
-  parsed = parseMaCslText(htmlToText(opsi.body), opsi.url);
+  const opsi = await opsiSearch(query, new PacedBoardClient({ source: 'ma_csl' }));
+  const parsed = opsi.blocked
+    ? { people: [] as ResolverResult['people'], coverage_reason: 'blocked' as const, source: 'ma_csl' as const, source_url: opsi.url }
+    : parseMaCslText(htmlToText(opsi.body), opsi.url);
   await writeBoardCache({
     board: 'ma_csl',
     cache_key: cacheKey,
@@ -241,7 +212,11 @@ async function lookupMaLicense(
     query_string: opsi.query_string,
     fetched_url: opsi.url,
   });
-  return { ...parsed, http_status: opsi.status };
+  if (parsed.people.length) return { ...parsed, http_status: opsi.status };
+  if (accela.blocked && opsi.blocked) {
+    return { people: [], coverage_reason: 'blocked', source: 'ma_csl', source_url: opsi.url, blocked: true, http_status: opsi.status };
+  }
+  return { ...parsed, coverage_reason: parsed.coverage_reason || 'not_found', http_status: opsi.status };
 }
 
 export async function resolveMaCsl(
@@ -251,24 +226,30 @@ export async function resolveMaCsl(
   const license = String(lead.license_number || '').trim();
   const businessName = lead.company_name?.trim() || '';
 
-  if (license) {
-    const byLicense = await lookupMaLicense(lead, { license }, client);
-    if (byLicense.people.length || byLicense.coverage_reason === 'blocked') return byLicense;
+  const attempts: ResolverResult[] = [];
+  if (license) attempts.push(await lookupMaLicense(lead, { license }, client));
+  if (businessName && !attempts.some((a) => a.people.length)) {
+    attempts.push(await lookupMaLicense(lead, { businessName }, client));
+  }
+  if (businessName && !attempts.some((a) => a.people.length)) {
+    attempts.push(await resolveMaSos(lead, new PacedBoardClient({ source: 'ma_sos' })));
   }
 
-  // no_license_number is a routing condition — try the business name on the license lookup.
-  if (businessName) {
-    const byName = await lookupMaLicense(lead, { businessName }, client);
-    if (byName.people.length || byName.coverage_reason === 'blocked') return byName;
-    const sos = await resolveMaSos(lead, client);
-    if (sos.people.length || sos.coverage_reason === 'blocked') return sos;
-    return { ...byName, coverage_reason: byName.coverage_reason || 'not_found' };
+  const hit = attempts.find((a) => a.people.length);
+  if (hit) return hit;
+  if (attempts.length && attempts.every((a) => a.coverage_reason === 'blocked')) {
+    return attempts[attempts.length - 1]!;
   }
-
-  return {
-    people: [],
-    coverage_reason: license ? 'not_found' : 'no_license_number',
-    source: 'ma_csl',
-    source_url: ACCELA,
-  };
+  if (!license && !businessName) {
+    return { people: [], coverage_reason: 'no_license_number', source: 'ma_csl', source_url: ACCELA };
+  }
+  return (
+    attempts.find((a) => a.coverage_reason !== 'blocked') ||
+    attempts[attempts.length - 1] || {
+      people: [],
+      coverage_reason: 'not_found',
+      source: 'ma_csl',
+      source_url: ACCELA,
+    }
+  );
 }

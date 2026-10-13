@@ -20,7 +20,8 @@ import { parsePaDosText } from './paDos.js';
 import { nycDobSearchUrl } from './nycDob.js';
 import { nyDosSearchUrl } from './nyDos.js';
 import { txTdlrSearchUrl } from './txTdlr.js';
-import { looksBlocked } from './http.js';
+import { looksBlocked, setBoardFetch } from './http.js';
+import { resolveMaCsl } from './maCsl.js';
 import { parseNycDobJson } from './nycDob.js';
 import { parseWaLniJson, parseWaLniText } from './waLni.js';
 import { parseTxTdlrJson, parseTxTdlrText } from './txTdlr.js';
@@ -274,6 +275,38 @@ describe('other board parsers', () => {
     assert.equal(result.people[0]?.role, 'qualifying_individual');
     assert.equal(result.people[0]?.last_name, 'JONES');
     assert.equal(result.people[0]?.confidence, 'medium');
+  });
+});
+
+describe('MA license miss routes to SOS', () => {
+  it('does not stop on Accela/OPSI block when SOS has officers', async () => {
+    setBoardFetch(async (input) => {
+      const url = String(input);
+      if (url.includes('elicensing21.mass.gov')) {
+        return new Response('Access Denied', { status: 404 });
+      }
+      if (url.includes('madpl.mylicense.com')) {
+        return new Response('Access Denied', { status: 403 });
+      }
+      if (url.includes('corp.sec.state.ma.us')) {
+        return new Response('Entity Name: ACME BUILDERS LLC\nPresident: PAT KIM\n', { status: 200 });
+      }
+      return new Response('no', { status: 404 });
+    });
+    try {
+      const result = await resolveMaCsl({
+        list_id: 'x',
+        lead_id: 1,
+        company_name: 'Acme Builders LLC',
+        state: 'MA',
+      });
+      assert.equal(result.source, 'ma_sos');
+      assert.equal(result.people.length, 1);
+      assert.equal(result.people[0]?.last_name, 'KIM');
+      assert.equal(result.coverage_reason, null);
+    } finally {
+      setBoardFetch(null);
+    }
   });
 });
 
