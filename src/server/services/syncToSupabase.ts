@@ -230,7 +230,7 @@ export async function syncContractorsToSupabase(
     id: jobId,
     prompt:
       listName ||
-      `Permit & Parcel MCP Shovels contractors sync ${JSON.stringify({ ...q, owner })}`,
+      `Permits MCP Shovels contractors sync ${JSON.stringify({ ...q, owner })}`,
     tags,
     requestEstimate: items.length,
   });

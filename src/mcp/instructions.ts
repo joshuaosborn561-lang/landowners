@@ -1,7 +1,7 @@
 export const SERVER_INSTRUCTIONS = `
-# Permit & Parcel MCP — Claude operating manual
+# Permits MCP — Claude operating manual
 
-You are connected to **permits-gcs** / Permit & Parcel MCP (SalesGlider; GitHub repo \`permits-GCs\`). Jobs:
+You are connected to **Permits MCP** (protocol id \`permits-gcs\` so existing connectors keep working; GitHub repo \`permits-GCs\`). Jobs:
 
 1. **Live PermitStack commercial GC pulls for ANY US market** via \`permitstack_pull_calling_list\` (alias \`shovels_pull_calling_list\`) — **not timezone-restricted, not TX-only**
 2. **DFW cache** (Dallas / Fort Worth / Rockwall) — free via \`save_calling_list\`
@@ -12,7 +12,7 @@ You are connected to **permits-gcs** / Permit & Parcel MCP (SalesGlider; GitHub 
 
 The old Propwire → LoopNet → Google property-owner cascade was **removed**. Do not offer it.
 
-This server is **not** a people-resolver. It surfaces public permit + parcel records. Prefer the name Permit & Parcel over "Property Owners".
+This server surfaces public permit + parcel records and state-board owner names for Email Finder \`name_company\` mode. Prefer the name **Permits MCP**. Protocol id alias: \`permits-gcs\`. Never call PDL. Never dump lead names in tool replies.
 
 ## Geography (critical — Cayden)
 - Cayden may search **whenever he wants, anywhere in the US**. There is **no timezone gate** and **no Texas-only filter** on live PermitStack tools.
@@ -65,7 +65,7 @@ The live PermitStack key is already configured on the server (\`PERMITSTACK_API_
 Goal: dial **owner cells**, not office/main/license lines.
 1. \`shovels_pull_calling_list\` (any US) or \`save_calling_list\` (DFW cache) or \`import_calling_list_csv\` (only if he already has a file)
 2. \`score_calling_list\` (free). Default \`only_unscored=true\` — re-run until \`remaining_unscored=0\`. Limit up to 8,000.
-3. \`match_texas_officers(only_unmatched=true, limit=80)\` until \`remaining_unmatched=0\` — Texas entities only. Florida lists: \`match_florida_officers(only_unmatched=true, limit=40)\` (public Sunbiz first; a rejected SOS key falls back to HTML or returns ok=false with zero writes — never stamps \`error\`).
+3. \`match_state_owners(list_id, dry_run=true, max_rows=25)\` first, then without dry_run. Per-state tools stay callable. Texas Comptroller still: \`match_texas_officers(only_unmatched=true, limit=80)\`. Florida Sunbiz still: \`match_florida_officers(only_unmatched=true, limit=40)\`. Tool replies are counts / job ids / nameless samples only.
 4. \`lookup_line_type\` — Veriphone Standard ~$2.40/1k. Show the $ estimate, then \`confirm=true\`. Default limit 50. Re-run \`only_unknown=true\` and **omit offset**. Invalid/non-NANP phones are marked \`invalid\` so the queue drains.
 5. \`query_calling_list(dial_status=owner_cell)\` after line type for **match/resolved+mobile**. Verified mobiles with no owner identity are \`mobile_unverified_owner\` (including \`agent\`). Genuine person-name conflicts stay \`different\` but remain dialable. \`owner_people_search\` only if you still need a different number. Take **wireless** only if the address matches. \`record_owner_cell\`
 6. Re-query \`query_calling_list(dial_status=owner_cell)\` after recording cells. \`officer_match\` is null until the state officer tool runs — never seeded as \`none\`.
@@ -108,6 +108,7 @@ Call \`permitstack_estimate_credits\` (alias \`shovels_estimate_credits\`, or \`
 | score_calling_list | No | Free owner vs office score (resume via only_unscored) |
 | match_texas_officers | No | Comptroller PIR officers (TX entities) |
 | match_florida_officers | No | Sunbiz officers (FL entities; optional key if Cloudflare blocks) |
+| match_state_owners | No | State board owners (CSLB, L&I, NYC DOB, NY DOS, MA CSL, MN DLI, PA HIC, TDLR). Counts only. |
 | recompute_officer_dial_status | No | Restore dial_status from stored officers (no registry calls) |
 | lookup_line_type | ~$2.40/1k | Veriphone mobile vs landline |
 | owner_people_search | No | Google / people-search URLs |
@@ -117,11 +118,12 @@ Call \`permitstack_estimate_credits\` (alias \`shovels_estimate_credits\`, or \`
 | sync_to_supabase | No | S2S sync; contractor syncs also catalog a calling list |
 `.trim();
 
-export const GUIDE_MARKDOWN = `# Permit & Parcel MCP — operator guide
+export const GUIDE_MARKDOWN = `# Permits MCP — operator guide
 
 ## Identity
-- **Name:** Permit & Parcel MCP (not a people "Property Owners" resolver)
-- **Server:** \`permits-gcs\`
+- **Name:** Permits MCP
+- **Server id:** \`permits-gcs\` (kept as the connector alias; changing it would break existing configs)
+- **Package:** \`permits-mcp\` (\`permits-gcs-mcp\` / \`permit-parcel-mcp\` bins still work)
 - **Jobs:** Live PermitStack pulls for any US market + free DFW cache + request estimates + Supabase calling lists + DCAD/TAD/CCAD parcels + mailing-address operators
 - **Supabase:** project reported in \`health\` / sync responses (expect \`kemvxzhcxvynmoutwdrh\` / schema \`permit_parcel\`)
 - **Removed:** Propwire / LoopNet / Google owner cascade
@@ -149,7 +151,7 @@ Estimate with \`permitstack_estimate_credits\` (any geos). Pull with \`permitsta
 Do not buy paid SOS unmasking for bulk LLCs. Use Texas Comptroller Public Information Reports after operator rollup (Texas entities) or \`match_florida_officers\` for Florida Sunbiz public records. Registered agent ≠ owner.
 `;
 
-export const WHEN_TO_USE_MARKDOWN = `# When to use Permit & Parcel MCP
+export const WHEN_TO_USE_MARKDOWN = `# When to use Permits MCP
 
 ## Yes
 - Live PermitStack commercial GC lists for **any US market** (East/West coast, city, county, state)

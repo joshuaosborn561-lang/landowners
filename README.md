@@ -1,9 +1,9 @@
-# Permit & Parcel MCP (`permits-GCs`)
+# Permits MCP (`permits-gcs`)
 
 GitHub: https://github.com/joshuaosborn561-lang/permits-GCs  
 (formerly `property-management-scraper` / misnamed “Property Owners”)
 
-SalesGlider MCP for public **permit + parcel** records — not a people-resolver:
+SalesGlider MCP for public **permit + parcel** records and **state license-board owner names**. Display name is **Permits MCP**. The MCP protocol id stays `permits-gcs` so existing Claude / Cursor connectors keep working (`permits-gcs` is the alias).
 
 1. **PermitStack commercial contractors** — live `GET /v1/contractors/search` plus a cached DFW CSV (~6,124)
 2. **PermitStack API key from Claude** — Cayden can set or change it with `permitstack_set_api_key` (alias `shovels_set_api_key`)
@@ -37,6 +37,8 @@ This service writes to project **`kemvxzhcxvynmoutwdrh`**, schema **`permit_parc
 | `score_calling_list` | Free owner vs office score (`only_unscored`, offset, up to 8k) |
 | `match_texas_officers` | Texas Comptroller PIR officers (`only_unmatched`, limit 50, resume) |
 | `match_florida_officers` | Florida Sunbiz officers (`only_unmatched`, public HTML; optional `florida_sos_api_key`) |
+| `match_state_owners` | Umbrella: route a list by state to CSLB / L&I / NYC DOB / NY DOS / MA CSL / MN DLI / PA HIC / TDLR. Counts only. |
+| `match_california_owners` … `match_texas_tdlr_owners` | Per-state owner tools (same contract; callable on their own) |
 | `lookup_line_type` | Veriphone Standard (~$2.40/1k) cell vs landline |
 | `owner_people_search` / `record_owner_cell` | Google + free people-search leftovers |
 | `set_enrichment_api_key` | Cayden pastes Veriphone / Texas CPA / optional Florida Sunbiz keys |
@@ -59,7 +61,7 @@ Set `PERMITSTACK_API_KEY` on Railway, or have Cayden paste it with `permitstack_
 1. Optional: `shovels_set_api_key` if he wants to use his own Shovels key
 2. Estimate (optional): `shovels_estimate_credits` with place/city/`has_phone`
 3. Save: `save_calling_list` with `owner=cayden` and `exclude_national_chains=true` (keeps local GCs of any permit volume). Non-DFW: `import_calling_list_csv`.
-4. `score_calling_list(only_unscored=true)` until `remaining_unscored=0` → `match_texas_officers` (TX) or `match_florida_officers` (FL) until `remaining_unmatched=0` → `lookup_line_type` (confirm $ first)
+4. `score_calling_list(only_unscored=true)` until `remaining_unscored=0` → `match_state_owners` (any state) or `match_texas_officers` / `match_florida_officers` until unmatched is 0 → `lookup_line_type` (confirm $ first)
 5. Leftovers: `owner_people_search` then `record_owner_cell` for wireless hits
 6. Dial: `query_calling_list(owner=cayden, exclude_national_chains=true, dial_status=owner_cell)`
 

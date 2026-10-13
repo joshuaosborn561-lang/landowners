@@ -4,16 +4,16 @@
  */
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { loadAppSettings } from '../server/lib/appSettings.js';
-import { createPermitParcelMcpServer } from './createServer.js';
+import { createPermitsMcpServer } from './createServer.js';
 
 async function main() {
   await loadAppSettings();
-  const server = createPermitParcelMcpServer();
+  const server = createPermitsMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
 
 main().catch((err) => {
-  console.error('[permit-parcel-mcp] fatal', err);
+  console.error('[permits-mcp] fatal', err);
   process.exit(1);
 });

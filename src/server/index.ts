@@ -29,7 +29,7 @@ app.get('/api/health', async (_req, res) => {
   const shovelsKey = await getShovelsKeyStatus();
   res.json({
     ok: true,
-    product: 'Permit & Parcel MCP',
+    product: 'Permits MCP',
     demoMode: config.demoMode,
     supabaseConfigured: hasSupabase(),
     supabase_project: target.supabase_project,
@@ -136,7 +136,7 @@ app.listen(config.port, () => {
   );
   const contractors = loadShovelsContractors();
   const parcels = loadParcels();
-  console.log(`Permit & Parcel MCP listening on :${config.port}`);
+  console.log(`Permits MCP listening on :${config.port}`);
   console.log(`MCP streamable HTTP: /mcp  |  stdio: node dist/mcp/stdio.js`);
   console.log(
     `Mode: ${config.demoMode ? 'DEMO' : 'LIVE'} | Supabase: ${hasSupabase() ? 'yes' : 'no'} | Contractors: ${contractors.length} | Parcels: ${parcels.length}`,

@@ -1,5 +1,16 @@
 {
   "mcpServers": {
+    "permits-mcp": {
+      "command": "node",
+      "args": ["/absolute/path/to/permits-GCs/dist/mcp/stdio.js"],
+      "env": {
+        "SUPABASE_URL": "https://kemvxzhcxvynmoutwdrh.supabase.co",
+        "SUPABASE_ANON_KEY": "",
+        "SUPABASE_INGEST_SECRET": "",
+        "SHOVELS_API_KEY": "",
+        "DEMO_MODE": "false"
+      }
+    },
     "permits-gcs": {
       "command": "node",
       "args": ["/absolute/path/to/permits-GCs/dist/mcp/stdio.js"],

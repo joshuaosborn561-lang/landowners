@@ -1,4 +1,4 @@
--- Permit & Parcel MCP (repo: joshuaosborn561-lang/permits-GCs)
+-- Permits MCP (repo: joshuaosborn561-lang/permits-GCs; protocol id alias: permits-gcs)
 -- Active schema for parcels + calling lists. Applied to google-maps-scraper-leads.
 -- See also supabase/migrations/ for incremental RPCs.
 --

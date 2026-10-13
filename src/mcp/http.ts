@@ -5,7 +5,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { enrichmentKeysStatus } from '../server/lib/appSettings.js';
 import { getShovelsKeyStatus } from '../server/lib/shovelsKey.js';
 import { supabaseTargetMeta } from '../server/lib/supabaseTarget.js';
-import { createPermitParcelMcpServer } from './createServer.js';
+import { createPermitsMcpServer } from './createServer.js';
 
 /**
  * Mount Streamable HTTP MCP at /mcp for Claude / Cursor remote connectors.
@@ -54,7 +54,7 @@ export function mountMcpHttp(app: Express): void {
           }
         };
 
-        const server = createPermitParcelMcpServer();
+        const server = createPermitsMcpServer();
         await server.connect(transport);
         await transport.handleRequest(req, res, req.body);
         return;
@@ -133,7 +133,7 @@ export function mountMcpHttp(app: Express): void {
     const enrichKeys = await enrichmentKeysStatus();
     res.json({
       ok: true,
-      product: 'Permit & Parcel MCP',
+      product: 'Permits MCP',
       transport: 'streamable-http',
       path: '/mcp',
       authRequired: false,
@@ -162,6 +162,14 @@ export function mountMcpHttp(app: Express): void {
         'score_calling_list',
         'match_texas_officers',
         'match_florida_officers',
+        'match_state_owners',
+        'match_california_owners',
+        'match_washington_owners',
+        'match_new_york_owners',
+        'match_massachusetts_owners',
+        'match_minnesota_owners',
+        'match_pennsylvania_owners',
+        'match_texas_tdlr_owners',
         'recompute_officer_dial_status',
         'lookup_line_type',
         'owner_people_search',
