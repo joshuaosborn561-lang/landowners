@@ -15,10 +15,16 @@ import { looksBlocked } from './http.js';
 import { parseNycDobJson } from './nycDob.js';
 import { parseWaLniJson, parseWaLniText } from './waLni.js';
 import { parseTxTdlrJson, parseTxTdlrText } from './txTdlr.js';
-import { parseMaCslText } from './maCsl.js';
+import { hasRealMaResult, parseMaCslText } from './maCsl.js';
 import { parseMnDliCsv, parseMnDliText } from './mnDli.js';
 import { parsePaHicText } from './paHic.js';
 import { sampleOwnerRows } from './types.js';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const fixture = (name: string) =>
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', name), 'utf8');
 
 describe('splitPersonName', () => {
   it('splits two and three tokens on the last word', () => {
@@ -129,16 +135,16 @@ describe('other board parsers', () => {
 
   it('parses TDLR / MA / MN / PA holder lines', () => {
     assert.equal(parseTxTdlrText('Licensee: SAM LEE\nActive\n', 'u').people[0]?.last_name, 'LEE');
-    assert.equal(
-      parseMaCslText('License Status: Active\nExpiration Date: 01/01/2030\nLicense Holder: PAT KIM\n', 'u').people[0]
-        ?.role,
-      'owner',
-    );
+    assert.equal(parseMaCslText(fixture('ma-accela-result.txt'), 'u').people[0]?.role, 'owner');
+    assert.equal(parseMaCslText(fixture('ma-accela-result.txt'), 'u').people[0]?.last_name, 'KIM');
+    assert.equal(hasRealMaResult(fixture('ma-accela-form.txt')), false);
+    assert.equal(hasRealMaResult(fixture('ma-accela-result.txt')), true);
     assert.equal(
       parseMnDliText('Qualifying Person: CHRIS ONG\nActive\n', 'u').people[0]?.role,
       'qualifying_individual',
     );
     assert.equal(parsePaHicText('Owner: RILEY COHEN\n', 'u').people[0]?.source, 'pa_hic');
+    assert.equal(parsePaHicText('<div class="cf-turnstile"></div>', 'u').coverage_reason, 'blocked');
   });
 
   it('ignores Accela chrome that only says Licensee', () => {

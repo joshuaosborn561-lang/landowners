@@ -37,7 +37,7 @@ This service writes to project **`kemvxzhcxvynmoutwdrh`**, schema **`permit_parc
 | `score_calling_list` | Free owner vs office score (`only_unscored`, offset, up to 8k) |
 | `match_texas_officers` | Texas Comptroller PIR officers (`only_unmatched`, limit 50, resume) |
 | `match_florida_officers` | Florida Sunbiz officers (`only_unmatched`, public HTML; optional `florida_sos_api_key`) |
-| `match_state_owners` | Umbrella: route a list by state to CSLB / L&I / NYC DOB / NY DOS / MA CSL / MN DLI / PA HIC / TDLR. Counts only. |
+| `match_state_owners` | Umbrella: route a list by state to CSLB / L&I / NYC DOB / NY DOS / MA CSL / MN DLI / PA HIC / TDLR. Counts only. MA uses Accela viewstate POST plus official OPSI mylicense.com. PA HIC has no open-data dump (Turnstile → blocked). |
 | `match_california_owners` … `match_texas_tdlr_owners` | Per-state owner tools (same contract; callable on their own) |
 | `lookup_line_type` | Veriphone Standard (~$2.40/1k) cell vs landline |
 | `owner_people_search` / `record_owner_cell` | Google + free people-search leftovers |

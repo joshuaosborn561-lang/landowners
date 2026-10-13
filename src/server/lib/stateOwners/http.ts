@@ -21,6 +21,7 @@ export interface BoardGetResult {
   body: string;
   url: string;
   retried: boolean;
+  setCookie: string[];
 }
 
 /**
@@ -41,6 +42,14 @@ export class PacedBoardClient {
   }
 
   async get(url: string, init: RequestInit = {}): Promise<BoardGetResult> {
+    return this.request(url, init);
+  }
+
+  async post(url: string, init: RequestInit = {}): Promise<BoardGetResult> {
+    return this.request(url, { ...init, method: 'POST' });
+  }
+
+  private async request(url: string, init: RequestInit = {}): Promise<BoardGetResult> {
     const wait = this.lastRequestAt ? this.gapMs - (Date.now() - this.lastRequestAt) : 0;
     if (wait > 0) await sleep(wait);
 
@@ -63,7 +72,10 @@ export class PacedBoardClient {
     return { ...result, retried };
   }
 
-  private async once(url: string, init: RequestInit): Promise<{ status: number; body: string; url: string }> {
+  private async once(
+    url: string,
+    init: RequestInit,
+  ): Promise<{ status: number; body: string; url: string; setCookie: string[] }> {
     const res = await getBoardFetch()(url, {
       ...init,
       redirect: init.redirect ?? 'follow',
@@ -75,7 +87,8 @@ export class PacedBoardClient {
       },
     });
     const body = await res.text();
-    return { status: res.status, body, url: res.url || url };
+    const setCookie = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
+    return { status: res.status, body, url: res.url || url, setCookie };
   }
 }
 
