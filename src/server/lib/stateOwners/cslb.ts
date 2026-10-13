@@ -1,4 +1,4 @@
-import { htmlToText, lineAfter, lineStarting, looksLikeSolePropPerson, splitPersonName } from './names.js';
+import { htmlToText, labeledValue, lineStarting, looksLikeSolePropPerson, splitPersonName } from './names.js';
 import { looksBlocked, PacedBoardClient } from './http.js';
 import { licenseCacheKey, readBoardCache, writeBoardCache } from './cache.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
@@ -51,13 +51,14 @@ function personFromRaw(
 /** Parse stripped CSLB license-detail text. */
 export function parseCslbText(text: string, sourceUrl = ''): CslbParsed {
   const body = text.replace(/\r/g, '');
-  const business_name = lineAfter(body, 'Business Information');
+  const business_name = labeledValue(body, 'Business Information');
   const phoneLine = lineStarting(body, 'Business Phone Number:');
   const business_phone = phoneFromLine(phoneLine);
-  const entity = lineAfter(body, 'Entity');
-  const statusLine = lineAfter(body, 'License Status') || '';
-  const license_status = statusLine || null;
-  const active = /current and active/i.test(statusLine);
+  const entity = labeledValue(body, 'Entity');
+  const statusLine = labeledValue(body, 'License Status');
+  const license_status = statusLine;
+  const missingStatus = !statusLine;
+  const active = /current and active/i.test(statusLine || '');
 
   const people: OwnerPerson[] = [];
   const qi =
@@ -77,6 +78,18 @@ export function parseCslbText(text: string, sourceUrl = ''): CslbParsed {
         personFromRaw(business_name, 'sole_proprietor', 'medium', sourceUrl, business_phone),
       );
     }
+  }
+
+  if (missingStatus) {
+    return {
+      business_name,
+      business_phone,
+      entity,
+      license_status,
+      active: false,
+      people: [],
+      coverage_reason: 'parse_error',
+    };
   }
 
   let coverage_reason: ResolverResult['coverage_reason'] = null;

@@ -96,7 +96,7 @@ export function looksBlocked(status: number, body: string): boolean {
   if (status === 403 || status === 401 || status === 429) return true;
   const text = body || '';
   const hasPayload =
-    /Business Information|Governing person|license_number|Qualifying Person|Licensee|owner_name|principalname|OWNER NAME/i.test(
+    /Business Information|Governing person|license_number|Qualifying Person|Licensee|owner_name|principalname|OWNER NAME|Officer|Director|Entity Name/i.test(
       text,
     );
   // Cloudflare Turnstile on an otherwise empty search shell is a block.

@@ -1156,7 +1156,7 @@ WHAT IT DOES: Sunbiz entity-name search + officer/director roster. Public HTML i
   const stateOwnerSchema = {
     list_id: z.string().min(1),
     states: z.array(z.string()).optional().describe('Optional state codes (CA, WA, NY, MA, MN, PA, TX, FL).'),
-    max_rows: z.number().int().min(1).max(100).optional().describe('Default 25. Dry runs cap at 25.'),
+    max_rows: z.number().int().min(1).max(100).optional().describe('Default 25. Dry runs cap at 100.'),
     dry_run: z.boolean().optional().describe('Parse and count only. Does not write contact_enrichment. Default false.'),
   };
 
@@ -1165,7 +1165,7 @@ WHAT IT DOES: Sunbiz entity-name search + officer/director roster. Public HTML i
     {
       title: 'Match state license-board owners (any list)',
       description: `WHEN TO USE: PermitStack contractor has no email or no contact name. Get the owner's name (and published business phone) from the state license board / corp registry for Email Finder Waterfall name_company mode.
-WHAT IT DOES: Routes each lead by state to CSLB / L&I / NYC DOB / NY DOS / MA CSL / MN DLI / PA HIC / TX TDLR+SOS / Sunbiz. Writes permit_parcel.contact_enrichment. Returns counts, job_id, per-state hit rates, and up to 10 nameless samples (role + source). Never PDL. Never dump names.`,
+WHAT IT DOES: Routes each lead by state to CSLB / L&I / NYC DOB / NY DOS / MA CSL+SOS / MN DLI / PA DOS / TX TDLR+SOS / Sunbiz. Writes permit_parcel.contact_enrichment. Returns counts, job_id, per-state hit rates, and up to 10 nameless samples (role + source). Never PDL. Never dump names.`,
       inputSchema: stateOwnerSchema,
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
@@ -1188,7 +1188,7 @@ WHAT IT DOES: Routes each lead by state to CSLB / L&I / NYC DOB / NY DOS / MA CS
     { name: 'match_new_york_owners', title: 'NYC DOB / NY DOS owners', board: 'nyc_dob/ny_dos' },
     { name: 'match_massachusetts_owners', title: 'Massachusetts CSL/HIC owners', board: 'ma_csl' },
     { name: 'match_minnesota_owners', title: 'Minnesota DLI qualifying person', board: 'mn_dli' },
-    { name: 'match_pennsylvania_owners', title: 'Pennsylvania HIC owners', board: 'pa_hic' },
+    { name: 'match_pennsylvania_owners', title: 'Pennsylvania DOS officers', board: 'pa_dos' },
     { name: 'match_texas_tdlr_owners', title: 'Texas TDLR (+ SOS fallback) owners', board: 'tx_tdlr' },
   ];
   for (const spec of perState) {

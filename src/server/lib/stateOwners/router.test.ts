@@ -12,7 +12,7 @@ describe('router', () => {
     assert.equal(sourceForState('NY', 'Albany'), 'ny_dos');
     assert.equal(sourceForState('MA'), 'ma_csl');
     assert.equal(sourceForState('MN'), 'mn_dli');
-    assert.equal(sourceForState('PA'), 'pa_hic');
+    assert.equal(sourceForState('PA'), 'pa_dos');
     assert.equal(sourceForState('TX'), 'tx_tdlr');
     assert.equal(sourceForState('FL'), 'sunbiz');
   });

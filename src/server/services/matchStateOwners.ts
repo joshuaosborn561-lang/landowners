@@ -10,7 +10,7 @@ import {
   resolveNewYork,
   resolveMaCsl,
   resolveMnDli,
-  resolvePaHic,
+  resolvePaDos,
   resolveTexas,
   sampleOwnerRows,
   normalizeState,
@@ -33,8 +33,14 @@ export type StateOwnerTool =
   | 'match_pennsylvania_owners'
   | 'match_texas_tdlr_owners';
 
-const DRY_RUN_CAP = 25;
+const DEFAULT_ROWS = 25;
+const DRY_RUN_CAP = 100;
 const LIVE_CAP = 100;
+
+export function clampOwnerRows(maxRows: number | undefined, dryRun: boolean): number {
+  const cap = dryRun ? DRY_RUN_CAP : LIVE_CAP;
+  return Math.min(Math.max(maxRows ?? DEFAULT_ROWS, 1), cap);
+}
 
 export interface StateOwnerJobOpts {
   list_id: string;
@@ -52,7 +58,14 @@ interface StateStats {
 }
 
 function emptyCoverage(): Record<CoverageReason, number> {
-  return { not_found: 0, inactive_license: 0, no_license_number: 0, sole_prop_dba: 0, blocked: 0 };
+  return {
+    not_found: 0,
+    inactive_license: 0,
+    no_license_number: 0,
+    sole_prop_dba: 0,
+    blocked: 0,
+    parse_error: 0,
+  };
 }
 
 function emptyStats(): StateStats {
@@ -168,7 +181,7 @@ function resolverForTool(tool: StateOwnerTool): ((lead: OwnerLead) => Promise<Re
     case 'match_minnesota_owners':
       return resolveMnDli;
     case 'match_pennsylvania_owners':
-      return resolvePaHic;
+      return resolvePaDos;
     case 'match_texas_tdlr_owners':
       return resolveTexas;
     default:
@@ -195,8 +208,7 @@ function statesForTool(tool: StateOwnerTool, requested?: string[]): string[] | n
 export async function matchStateOwners(opts: StateOwnerJobOpts): Promise<Record<string, unknown>> {
   const tool = opts.tool ?? 'match_state_owners';
   const dryRun = opts.dry_run === true;
-  const cap = dryRun ? DRY_RUN_CAP : LIVE_CAP;
-  const maxRows = Math.min(Math.max(opts.max_rows ?? DRY_RUN_CAP, 1), cap);
+  const maxRows = clampOwnerRows(opts.max_rows, dryRun);
   const jobId = `state-owners-${randomUUID().slice(0, 8)}`;
   const listId = opts.list_id.trim();
   if (!listId) return { ok: false, error: 'list_id required', job_id: jobId };

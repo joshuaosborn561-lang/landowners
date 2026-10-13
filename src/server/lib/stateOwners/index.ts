@@ -10,6 +10,8 @@ export * from './nyDos.js';
 export * from './maCsl.js';
 export * from './mnDli.js';
 export * from './paHic.js';
+export * from './paDos.js';
+export * from './maSos.js';
 export * from './txTdlr.js';
 export * from './sunbizAdapter.js';
 export * from './txSosAdapter.js';

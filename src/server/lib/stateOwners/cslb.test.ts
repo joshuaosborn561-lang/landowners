@@ -66,4 +66,34 @@ describe('parseCslbText', () => {
     assert.equal(parsed.people[0]?.review_flag, true);
     assert.equal(parsed.people[0]?.full_name_raw, 'MARY ELLEN ANN GARCIA');
   });
+
+  it('reads License Status when the heading and sentence are on one line', () => {
+    const parsed = parseCslbText(
+      [
+        'Business Information ACME WIRING INC',
+        'Entity Corporation',
+        'License Status This license is current and active.',
+        'The qualifying individual JANE Q PUBLIC certified that he/she owns 10 percent or more of the voting stock/membership interest of this company.',
+      ].join('\n'),
+    );
+    assert.equal(parsed.active, true);
+    assert.match(parsed.license_status || '', /current and active/i);
+    assert.equal(parsed.entity, 'Corporation');
+    assert.equal(parsed.business_name, 'ACME WIRING INC');
+    assert.equal(parsed.people.length, 1);
+    assert.equal(parsed.coverage_reason, null);
+  });
+
+  it('uses parse_error when License Status is missing, never inactive_license', () => {
+    const parsed = parseCslbText(
+      [
+        'Business Information ACME WIRING INC',
+        'Entity Corporation',
+        'The qualifying individual JANE Q PUBLIC certified that he/she owns 10 percent or more of the voting stock/membership interest of this company.',
+      ].join('\n'),
+    );
+    assert.equal(parsed.active, false);
+    assert.equal(parsed.people.length, 0);
+    assert.equal(parsed.coverage_reason, 'parse_error');
+  });
 });

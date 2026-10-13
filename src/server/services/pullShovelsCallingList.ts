@@ -25,7 +25,7 @@ import { upsertCallingListMeta } from './callingLists.js';
 import { resolveGeoTargets, type GeoLevelHint, type GeoTarget } from './shovelsGeoTargets.js';
 import { loadPullState, pullJobKey, savePullState } from './shovelsPull.js';
 import { estimateShovelsCredits } from './shovelsCredits.js';
-import { contractorsToCsv, type ShovelsContractor } from './shovelsContractors.js';
+import { contractorsToCsv, permitStackPlaceId, type ShovelsContractor } from './shovelsContractors.js';
 import { replaceLeads, upsertExport, upsertJob } from './syncToSupabase.js';
 
 const DEFAULT_MAX_RECORDS = 1500;
@@ -896,8 +896,10 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
 
   const leads = contractors.map((c) => {
     const chain = nationalChainHit(c);
+    const place = permitStackPlaceId(c.id);
     return {
-      place_id: `shovels:${c.id}`,
+      place_id: place.place_id,
+      ps_id: place.ps_id,
       name: c.business_name || c.name || '',
       owner_name: c.name || '',
       email: c.email || c.primary_email || '',

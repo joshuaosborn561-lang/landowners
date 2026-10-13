@@ -1,4 +1,10 @@
-import { looksLikeSolePropPerson, normalizeCompanyName, parseBoardPersonName, splitPersonName } from './names.js';
+import {
+  looksLikeSolePropPerson,
+  normalizeCompanyName,
+  parseBoardPersonName,
+  pickBestNameMatch,
+  splitPersonName,
+} from './names.js';
 import { looksBlocked, PacedBoardClient } from './http.js';
 import { nameStateCacheKey, readBoardCache, writeBoardCache } from './cache.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
@@ -68,9 +74,9 @@ export function parseMnDliCsv(text: string, companyName: string, sourceUrl: stri
 
   const businesses = rows.filter((r) => !isPerson(r));
   const exact = businesses.filter((r) => {
-    const name = normalizeCompanyName(r.Name || '');
-    const dba = normalizeCompanyName(r.DBA_Name || '');
-    return name === target || dba === target;
+    const name = r.Name || '';
+    const dba = r.DBA_Name || '';
+    return Boolean(pickBestNameMatch(target, [name, dba], (n) => n));
   });
   const biz = exact.find(isIssued) || exact[0] || null;
   if (exact.length && !exact.some(isIssued)) {
@@ -213,11 +219,19 @@ export async function resolveMnDli(
   }
 
   const parsed = parseMnDliCsv(csvText, lead.company_name, RESIDENTIAL);
+  const needle = normalizeCompanyName(lead.company_name).slice(0, 8);
   const slice = csvText
     .split(/\r?\n/)
-    .filter((line, i) => i === 0 || line.toUpperCase().includes(lead.company_name.slice(0, 8).toUpperCase()))
+    .filter((line, i) => i === 0 || (needle && line.toUpperCase().includes(needle)))
     .slice(0, 8)
     .join('\n');
-  await writeBoardCache({ board: 'mn_dli', cache_key: key, http_status: status, body: slice || csvText.slice(0, 500) });
+  await writeBoardCache({
+    board: 'mn_dli',
+    cache_key: key,
+    http_status: status,
+    body: slice || csvText.slice(0, 500),
+    query_string: `name=${normalizeCompanyName(lead.company_name) || lead.company_name}`,
+    fetched_url: RESIDENTIAL,
+  });
   return { ...parsed, http_status: status };
 }
