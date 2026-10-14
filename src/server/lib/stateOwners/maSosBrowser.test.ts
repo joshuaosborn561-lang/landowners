@@ -13,7 +13,15 @@ import {
   fetchMaSosViaPlaywright,
   buildMaSosPlaywrightInput,
 } from './maSosBrowser.js';
-import { applyOpsiFacilityFields, applyOpsiPersonFields, OPSI_FACILITY } from './maCsl.js';
+import {
+  applyOpsiFacilityFields,
+  applyOpsiPersonFields,
+  MA_CSL_CACHE_VERSION,
+  maCslCacheKey,
+  maCslSearchName,
+  OPSI_FACILITY,
+} from './maCsl.js';
+import { isDefinitiveSosNotFound, parseMaSosText } from './maSos.js';
 
 describe('MA browser cost cap', () => {
   it('prices a batched lookup under the per-lookup and per-batch caps', () => {
@@ -83,6 +91,29 @@ describe('MA browser result mapping', () => {
       shouldUseMaBrowser({ people: [], coverage_reason: 'blocked', source: 'ma_sos', blocked: true, captcha: true }),
       false,
     );
+    assert.equal(
+      shouldUseMaBrowser({ people: [], coverage_reason: 'not_found', source: 'ma_sos', http_status: 0 }),
+      true,
+    );
+    assert.equal(
+      shouldUseMaBrowser({ people: [], coverage_reason: 'not_found', source: 'ma_sos', http_status: 200 }),
+      false,
+    );
+  });
+
+  it('treats proxy connect/timeout bodies as blocked, not a parsed no-results page', () => {
+    const timeout = parseMaSosText('', 'https://corp.sec.state.ma.us/corpweb/CorpSearch/CorpSearch.aspx');
+    assert.equal(timeout.coverage_reason, 'blocked');
+    assert.equal(timeout.blocked, true);
+    assert.equal(shouldUseMaBrowser(timeout), true);
+    const noResults = parseMaSosText(
+      'No records were found matching your search.',
+      'https://corp.sec.state.ma.us/corpweb/CorpSearch/CorpSearch.aspx',
+    );
+    assert.equal(noResults.coverage_reason, 'not_found');
+    assert.equal(noResults.blocked, undefined);
+    assert.equal(isDefinitiveSosNotFound('No records were found matching your search.'), true);
+    assert.equal(shouldUseMaBrowser(noResults), false);
   });
 
   it('runs one batched actor call and never includes names in the attempt log', async () => {
@@ -116,14 +147,26 @@ describe('MA browser result mapping', () => {
 });
 
 describe('OPSI current form fields', () => {
-  it('uses doing_business_as / facility full_name — not the retired licensee_name fields', () => {
-    const person = applyOpsiPersonFields({ t_web_lookup__profession_name: '' }, { businessName: 'Acme Builders LLC' });
-    assert.equal(person.t_web_lookup__doing_business_as, 'Acme Builders LLC');
+  it('posts Building Licenses + All types + entity name without LLC/Inc', () => {
+    const person = applyOpsiPersonFields(
+      { t_web_lookup__profession_name: '', t_web_lookup__license_type_name: 'Construction Supervisor' },
+      { businessName: 'Acme Builders LLC' },
+    );
+    assert.equal(person.t_web_lookup__doing_business_as, 'ACME BUILDERS');
     assert.equal(person.t_web_lookup__licensee_name, undefined);
     assert.equal(person.t_web_lookup__profession_name, 'Building Licenses');
-    const facility = applyOpsiFacilityFields({}, { businessName: 'Acme Builders LLC' });
-    assert.equal(facility.t_web_lookup__full_name, 'Acme Builders LLC');
+    assert.equal(person.t_web_lookup__license_type_name, '');
+    assert.equal(person.sch_button, 'Search');
+    const facility = applyOpsiFacilityFields({}, { businessName: 'Acme Builders Inc' });
+    assert.equal(facility.t_web_lookup__full_name, 'ACME BUILDERS');
+    assert.equal(facility.t_web_lookup__owner_name, 'ACME BUILDERS');
     assert.equal(facility.t_web_lookup__facility_name, undefined);
+    assert.equal(facility.t_web_lookup__license_type_name, '');
     assert.equal(OPSI_FACILITY.includes('Facility=Y'), true);
+    assert.equal(maCslSearchName('Acme Builders LLC'), 'ACME BUILDERS');
+    assert.equal(MA_CSL_CACHE_VERSION, 'v2');
+    assert.match(maCslCacheKey({ businessName: 'Acme Builders LLC' }), /MA-CSL-V2/);
+    assert.equal(maCslCacheKey({ businessName: 'Acme Builders LLC' }).includes('|MA'), true);
+    assert.equal(maCslCacheKey({ businessName: 'Acme Builders LLC' }).endsWith('|MA'), false);
   });
 });

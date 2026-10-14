@@ -102,7 +102,16 @@ export function parseMaSosText(text: string, sourceUrl: string, companyName?: st
   const real = people.filter((p) => p.role !== 'registered_agent');
   const chosen = real.length ? real : people;
   if (!chosen.length) {
-    return { people: [], coverage_reason: 'not_found', source: 'ma_sos', source_url: sourceUrl };
+    if (isDefinitiveSosNotFound(body) || looksLikeRealSosPage(body)) {
+      return { people: [], coverage_reason: 'not_found', source: 'ma_sos', source_url: sourceUrl };
+    }
+    return {
+      people: [],
+      coverage_reason: 'blocked',
+      source: 'ma_sos',
+      source_url: sourceUrl,
+      blocked: true,
+    };
   }
   return {
     people: chosen,
@@ -145,10 +154,19 @@ function blockedResult(url: string, status: number, body: string, cached = false
   };
 }
 
+export function isDefinitiveSosNotFound(text: string): boolean {
+  const body = text || '';
+  return /no records|0 record|not found|no matching/i.test(body) && !/officer|director|manager/i.test(body);
+}
+
+export function looksLikeRealSosPage(text: string): boolean {
+  return /Entity Name|CorpSummary\.aspx|__VIEWSTATE|Business Entity|Exact Name/i.test(text || '');
+}
+
 function isCacheableSosBody(text: string, parsed: ResolverResult): boolean {
   if (parsed.people.length) return true;
   if (parsed.coverage_reason === 'name_miss') return true;
-  return /no records|0 record|not found|no matching/i.test(text);
+  return isDefinitiveSosNotFound(text);
 }
 
 export async function resolveMaSos(
@@ -174,7 +192,7 @@ export async function resolveMaSos(
   }
 
   const got = await client.get(url);
-  if (looksBlocked(got.status, got.body)) {
+  if (got.status === 0 || looksBlocked(got.status, got.body)) {
     await writeBoardCache({
       board: 'ma_sos',
       cache_key: key,
@@ -188,6 +206,9 @@ export async function resolveMaSos(
   const fields = collectAspNetFields(got.body);
   if (!hasAspNetState(fields)) {
     const text = htmlToText(got.body);
+    if (!isDefinitiveSosNotFound(text) && !looksLikeRealSosPage(got.body)) {
+      return blockedResult(url, got.status || 0, got.body);
+    }
     const parsed = parseMaSosText(text, url, name);
     if (isCacheableSosBody(text, parsed)) {
       await writeBoardCache({

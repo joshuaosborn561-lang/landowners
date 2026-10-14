@@ -1,4 +1,10 @@
-import { htmlToText, parseBoardPersonName, splitPersonName } from './names.js';
+import {
+  htmlToText,
+  looksLikeSolePropPerson,
+  normalizeCompanyName,
+  parseBoardPersonName,
+  splitPersonName,
+} from './names.js';
 import {
   DESKTOP_UA,
   createResidentialProxyFetch,
@@ -9,7 +15,7 @@ import {
   shouldRetryMaViaProxy,
   PacedBoardClient,
 } from './http.js';
-import { collectAspNetFields, cookiesFromList, hasAspNetState } from './aspNet.js';
+import { collectAspNetFields, collectAspNetSearchSubmit, cookiesFromList, hasAspNetState } from './aspNet.js';
 import {
   formatMaCacheBypassLog,
   isBlockedBoardCache,
@@ -26,6 +32,9 @@ import {
   shouldUseMaBrowser,
 } from './maSosBrowser.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
+
+/** Bump ignores stale cached blocked / empty OPSI rows from before the form+parser fix. */
+export const MA_CSL_CACHE_VERSION = 'v2';
 
 /** Accela Citizen Access no longer lists DOL construction boards (eLIPSE). Kept only as a last-resort host label. */
 export const ACCELA = 'https://elicensing21.mass.gov/CitizenAccess/GeneralProperty/PropertyLookUp.aspx?isLicensee=Y';
@@ -55,20 +64,63 @@ function personFrom(
   };
 }
 
-export function hasRealMaResult(text: string): boolean {
-  const body = text.replace(/\r/g, '');
-  const status = /License Status/i.test(body);
-  const expiration = /Expiration Date/i.test(body);
-  return status && expiration && !/please enter a license number/i.test(body);
+export interface MaCslResultRow {
+  name: string;
+  license: string;
+  licenseType: string;
+  status: string;
+  detailsPath: string;
 }
 
-/** Accela / OPSI result text. Hits require License Status + Expiration Date. */
+/** Live OPSI SearchResults.aspx datagrid: Name / License Number / License Type / License Status. */
+export function parseMaCslResultsTable(html: string): MaCslResultRow[] {
+  const rows: MaCslResultRow[] = [];
+  const re =
+    /<a[^>]+href="([^"]*Details\.aspx\?result=[^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<td[^>]*>\s*(?:<span[^>]*>)?([^<]*)(?:<\/span>)?[\s\S]*?<td[^>]*>\s*(?:<span[^>]*>)?([^<]*)(?:<\/span>)?[\s\S]*?<td[^>]*>\s*(?:<span[^>]*>)?([^<]*)(?:<\/span>)?/gi;
+  for (const m of String(html || '').matchAll(re)) {
+    const name = htmlToText(m[2] || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!name) continue;
+    rows.push({
+      name,
+      license: htmlToText(m[3] || '').replace(/\s+/g, ' ').trim(),
+      licenseType: htmlToText(m[4] || '').replace(/\s+/g, ' ').trim(),
+      status: htmlToText(m[5] || '').replace(/\s+/g, ' ').trim(),
+      detailsPath: (m[1] || '').replace(/&amp;/g, '&'),
+    });
+  }
+  return rows;
+}
+
+export function maCslDetailsUrl(path: string): string {
+  if (/^https?:/i.test(path)) return path;
+  return new URL(path, 'https://madpl.mylicense.com/Verification/').href;
+}
+
+export function pickMaCslResultRow(rows: MaCslResultRow[]): MaCslResultRow | null {
+  return rows.find((r) => /^active$/i.test(r.status)) || rows[0] || null;
+}
+
+export function hasRealMaResult(text: string): boolean {
+  const body = text.replace(/\r/g, '');
+  if (/please enter a license number/i.test(body)) return false;
+  if (/License Status/i.test(body) && /Expiration Date/i.test(body)) return true;
+  if (/Details\.aspx\?result=/i.test(body) && /License (Number|Status|Type)/i.test(body)) return true;
+  if (/datagrid_results/i.test(body) && /License Number/i.test(body)) return true;
+  return parseMaCslResultsTable(body).length > 0;
+}
+
+/** Accela / OPSI result text. Hits are a details page or the live SearchResults table. */
 export function parseMaCslText(text: string, sourceUrl: string): ResolverResult {
   const body = text.replace(/\r/g, '');
-  if (!hasRealMaResult(body)) {
+  const tableRows = parseMaCslResultsTable(body);
+  if (!hasRealMaResult(body) && !tableRows.length) {
     return { people: [], coverage_reason: 'not_found', source: 'ma_csl', source_url: sourceUrl };
   }
-  if (/inactive|expired|revoked|lapsed/i.test(body) && !/active/i.test(body)) {
+  const activeRows = tableRows.filter((r) => /^active$/i.test(r.status));
+  const anyActive = /active/i.test(body) || activeRows.length > 0;
+  if (/inactive|expired|revoked|lapsed|null and void/i.test(body) && !anyActive) {
     return { people: [], coverage_reason: 'inactive_license', source: 'ma_csl', source_url: sourceUrl };
   }
   const holder =
@@ -87,11 +139,24 @@ export function parseMaCslText(text: string, sourceUrl: string): ResolverResult 
     const row = body.match(/Name\s+License Number[\s\S]{0,200}?([A-Z][A-Za-z .,'-]{2,60})\s+[A-Z]{1,6}-?\d+/i);
     raw = row?.[1]?.trim() || '';
   }
+  if (!raw && tableRows.length) {
+    raw = (activeRows[0] || tableRows[0]).name;
+  }
   const person = personFrom(raw, sourceUrl);
   if (!person) {
     return { people: [], coverage_reason: 'not_found', source: 'ma_csl', source_url: sourceUrl };
   }
   return { people: [person], coverage_reason: null, source: 'ma_csl', source_url: sourceUrl };
+}
+
+/** Entity search without LLC / Inc / Corp suffixes. */
+export function maCslSearchName(name: string): string {
+  return normalizeCompanyName(name) || String(name || '').replace(/\s+/g, ' ').trim();
+}
+
+export function maCslCacheKey(query: { license?: string; businessName?: string }): string {
+  if (query.license) return `${licenseCacheKey(query.license)}|MA-CSL-${MA_CSL_CACHE_VERSION}`;
+  return nameStateCacheKey(maCslSearchName(query.businessName || ''), `MA-CSL-${MA_CSL_CACHE_VERSION}`);
 }
 
 function headers(cookie: string, referer: string, extra: Record<string, string> = {}): Record<string, string> {
@@ -110,10 +175,19 @@ export function applyOpsiPersonFields(
   query: { license?: string; businessName?: string },
 ): Record<string, string> {
   const next = { ...fields };
-  next.t_web_lookup__profession_name = next.t_web_lookup__profession_name || 'Building Licenses';
-  next.t_web_lookup__license_type_name = next.t_web_lookup__license_type_name || 'Construction Supervisor';
+  next.t_web_lookup__profession_name = 'Building Licenses';
+  // Empty type = All. Forcing Construction Supervisor hid every business-name hit.
+  next.t_web_lookup__license_type_name = '';
   if (query.license) next.t_web_lookup__license_no = query.license;
-  if (query.businessName) next.t_web_lookup__doing_business_as = query.businessName;
+  if (query.businessName) {
+    const q = maCslSearchName(query.businessName);
+    next.t_web_lookup__doing_business_as = q;
+    if (looksLikeSolePropPerson(query.businessName) || looksLikeSolePropPerson(q)) {
+      const split = splitPersonName(q);
+      if (split.last_name) next.t_web_lookup__last_name = split.last_name;
+      if (split.first_name) next.t_web_lookup__first_name = split.first_name;
+    }
+  }
   next.sch_button = 'Search';
   return next;
 }
@@ -123,11 +197,13 @@ export function applyOpsiFacilityFields(
   query: { license?: string; businessName?: string },
 ): Record<string, string> {
   const next = { ...fields };
-  next.t_web_lookup__profession_name = next.t_web_lookup__profession_name || 'Building Licenses';
+  next.t_web_lookup__profession_name = 'Building Licenses';
+  next.t_web_lookup__license_type_name = '';
   if (query.license) next.t_web_lookup__license_no = query.license;
   if (query.businessName) {
-    next.t_web_lookup__full_name = query.businessName;
-    next.t_web_lookup__owner_name = query.businessName;
+    const q = maCslSearchName(query.businessName);
+    next.t_web_lookup__full_name = q;
+    next.t_web_lookup__owner_name = q;
   }
   next.sch_button = 'Search';
   return next;
@@ -158,6 +234,9 @@ async function opsiSearch(
     return { status: got.status, body: got.body, url: startUrl, blocked: false, query_string };
   }
   const postedFields = form === 'facility' ? applyOpsiFacilityFields(fields, query) : applyOpsiPersonFields(fields, query);
+  Object.assign(postedFields, collectAspNetSearchSubmit(got.body));
+  postedFields.sch_button = postedFields.sch_button || 'Search';
+  postedFields.__EVENTTARGET = postedFields.__EVENTTARGET || '';
   const cookie = cookiesFromList(got.setCookie);
   const posted = await client.post(startUrl, {
     headers: headers(cookie, startUrl, {
@@ -170,14 +249,29 @@ async function opsiSearch(
   if (looksBlocked(posted.status, posted.body)) {
     return { status: posted.status, body: posted.body, url: startUrl, blocked: true, query_string };
   }
-  const detailHref = posted.body.match(/Details\.aspx\?result=([a-f0-9-]+)/i);
-  if (!detailHref?.[1]) {
-    return { status: posted.status, body: posted.body, url: posted.url || startUrl, blocked: false, query_string };
+  let resultHtml = posted.body;
+  let resultUrl = posted.url || startUrl;
+  if (
+    !/datagrid_results|Details\.aspx\?result=/i.test(resultHtml) &&
+    /SearchResults\.aspx/i.test(`${resultHtml}\n${resultUrl}`)
+  ) {
+    const followed = await client.get('https://madpl.mylicense.com/Verification/SearchResults.aspx', {
+      headers: headers(cookiesFromList(posted.setCookie, cookie), startUrl),
+    });
+    logCslAttempt(followed.url || resultUrl, followed.status, form);
+    if (!looksBlocked(followed.status, followed.body)) {
+      resultHtml = followed.body;
+      resultUrl = followed.url || resultUrl;
+    }
   }
-  const detailUrl = `https://madpl.mylicense.com/Verification/Details.aspx?result=${detailHref[1]}`;
+  const picked = pickMaCslResultRow(parseMaCslResultsTable(resultHtml));
+  if (!picked) {
+    return { status: posted.status, body: resultHtml, url: resultUrl, blocked: false, query_string };
+  }
+  const detailUrl = maCslDetailsUrl(picked.detailsPath);
   const nextCookie = cookiesFromList(posted.setCookie, cookie);
-  const detail = await client.get(detailUrl, { headers: headers(nextCookie, startUrl) });
-  const combined = `${posted.body}\n${detail.body}`;
+  const detail = await client.get(detailUrl, { headers: headers(nextCookie, resultUrl) });
+  const combined = `${resultHtml}\n${detail.body}`;
   return {
     status: detail.status || posted.status,
     body: combined,
@@ -192,27 +286,28 @@ async function lookupMaLicense(
   query: { license?: string; businessName?: string },
   client: PacedBoardClient,
 ): Promise<ResolverResult> {
-  const cacheKey = query.license
-    ? licenseCacheKey(query.license)
-    : nameStateCacheKey(query.businessName || lead.company_name, 'MA');
+  const cacheKey = maCslCacheKey({
+    license: query.license,
+    businessName: query.businessName || lead.company_name,
+  });
   const cached = await readBoardCache('ma_csl', cacheKey);
   if (cached && isBlockedBoardCache(cached)) {
     console.log(formatMaCacheBypassLog({ board: 'ma_csl', status: cached.http_status, body: cached.body }));
   } else if (cached && shouldReuseBoardCache(cached) && hasRealMaResult(cached.body || '')) {
-    return { ...parseMaCslText(cached.body || '', ACCELA), cached: true, http_status: cached.http_status };
+    return { ...parseMaCslText(cached.body || '', cached.fetched_url || ACCELA), cached: true, http_status: cached.http_status };
   }
 
   // Accela elicensing21 no longer lists construction / CSL (eLIPSE). Contractor Hub is captcha-gated — skip.
   const person = await opsiSearch(query, client, 'person');
   let chosen = person;
   if (!person.blocked) {
-    const parsedPerson = parseMaCslText(htmlToText(person.body), person.url);
+    const parsedPerson = parseMaCslText(person.body, person.url);
     if (parsedPerson.people.length) {
       await writeBoardCache({
         board: 'ma_csl',
         cache_key: cacheKey,
         http_status: person.status,
-        body: htmlToText(person.body),
+        body: person.body,
         query_string: person.query_string,
         fetched_url: person.url,
       });
@@ -228,12 +323,12 @@ async function lookupMaLicense(
   }
   const parsed = chosen.blocked
     ? { people: [] as ResolverResult['people'], coverage_reason: 'blocked' as const, source: 'ma_csl' as const, source_url: chosen.url }
-    : parseMaCslText(htmlToText(chosen.body), chosen.url);
+    : parseMaCslText(chosen.body, chosen.url);
   await writeBoardCache({
     board: 'ma_csl',
     cache_key: cacheKey,
     http_status: chosen.status,
-    body: htmlToText(chosen.body),
+    body: chosen.body,
     query_string: chosen.query_string,
     fetched_url: chosen.url,
   });

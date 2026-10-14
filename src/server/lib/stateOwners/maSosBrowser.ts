@@ -69,7 +69,9 @@ export function detectMaSosChallenge(html: string): { captcha: boolean; incapsul
 export function shouldUseMaBrowser(result: ResolverResult): boolean {
   if (result.people.length) return false;
   if (result.captcha) return false;
-  return Boolean(result.blocked || result.coverage_reason === 'blocked');
+  if (result.blocked || result.coverage_reason === 'blocked') return true;
+  // Proxy connect/timeout (status 0) used to land as not_found and skip Playwright.
+  return result.http_status === 0;
 }
 
 export function estimateMaBrowserUsd(lookupCount: number): MaBrowserEstimate {

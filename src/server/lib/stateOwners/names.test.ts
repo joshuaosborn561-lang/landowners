@@ -22,7 +22,7 @@ import { parsePaOpenDataJson } from './paOpenData.js';
 import { sodaWhereContains, sodaWhereContainsLoose } from './soda.js';
 import { pickTxFranchiseRow } from './txOpenData.js';
 import { decodeCacheBody, encodeCacheBody } from './cache.js';
-import { parseMaSosResultLinks, parseMaSosText } from './maSos.js';
+import { isDefinitiveSosNotFound, parseMaSosResultLinks, parseMaSosText } from './maSos.js';
 import { shouldRetryMaViaProxy } from './http.js';
 import { parsePaDosText } from './paDos.js';
 import { nycDobSearchUrl } from './nycDob.js';
@@ -36,7 +36,12 @@ import { setMaSosBrowserRunnerForTests } from './maSosBrowser.js';
 import { parseNycDobJson } from './nycDob.js';
 import { parseWaLniJson, parseWaLniText } from './waLni.js';
 import { parseTxTdlrJson, parseTxTdlrText } from './txTdlr.js';
-import { hasRealMaResult, parseMaCslText } from './maCsl.js';
+import {
+  hasRealMaResult,
+  parseMaCslResultsTable,
+  parseMaCslText,
+  pickMaCslResultRow,
+} from './maCsl.js';
 import { parseMnDliCsv, parseMnDliText } from './mnDli.js';
 import { parsePaHicText } from './paHic.js';
 import { sampleOwnerRows } from './types.js';
@@ -351,6 +356,37 @@ describe('other board parsers', () => {
     assert.equal(result.coverage_reason, 'not_found');
   });
 
+  it('parses a live OPSI SearchResults + Details fixture into one named match', () => {
+    const searchHtml = fixture('ma-opsi-search-results.html');
+    const detailsHtml = fixture('ma-opsi-details.html');
+    const rows = parseMaCslResultsTable(searchHtml);
+    assert.equal(rows.length >= 1, true);
+    const active = rows.filter((r) => /^active$/i.test(r.status));
+    assert.equal(active.length, 1);
+    const picked = pickMaCslResultRow(rows);
+    assert.equal(Boolean(picked?.detailsPath.includes('Details.aspx?result=')), true);
+    assert.equal(hasRealMaResult(searchHtml), true);
+    assert.equal(hasRealMaResult(detailsHtml), true);
+    const fromTable = parseMaCslText(searchHtml, 'https://madpl.mylicense.com/Verification/SearchResults.aspx');
+    assert.equal(fromTable.people.length, 1);
+    assert.equal(Boolean(fromTable.people[0]?.full_name_raw), true);
+    const fromDetails = parseMaCslText(detailsHtml, 'https://madpl.mylicense.com/Verification/Details.aspx');
+    assert.equal(fromDetails.people.length, 1);
+    assert.equal(fromDetails.coverage_reason, null);
+    const combined = parseMaCslText(`${searchHtml}\n${detailsHtml}`, 'https://madpl.mylicense.com/Verification/Details.aspx');
+    assert.equal(combined.people.length, 1);
+    assert.equal(combined.source, 'ma_csl');
+  });
+
+  it('marks empty/timeout SOS text blocked so only a parsed no-results page is not_found', () => {
+    const empty = parseMaSosText('', 'u');
+    assert.equal(empty.coverage_reason, 'blocked');
+    assert.equal(empty.blocked, true);
+    const miss = parseMaSosText('No matching records were found.', 'u');
+    assert.equal(miss.coverage_reason, 'not_found');
+    assert.equal(isDefinitiveSosNotFound('No matching records were found.'), true);
+  });
+
   it('parses TDLR SODA owner_name for electrical trades', () => {
     const result = parseTxTdlrJson(
       [
@@ -598,6 +634,122 @@ describe('MA license miss routes to SOS', () => {
       setBoardFetch(null);
       setBoardCacheReadForTests(null);
       setMaSosBrowserRunnerForTests(null);
+    }
+  });
+
+  it('runs the browser path when SOS is a proxy connect miss, not a parsed no-results page', async () => {
+    setBoardCacheReadForTests(async () => null);
+    setBoardFetch(async (input) => {
+      if (String(input).includes('corp.sec.state.ma.us')) {
+        return new Response('', { status: 200 });
+      }
+      return new Response('Access Denied', { status: 403 });
+    });
+    let actorCalls = 0;
+    setMaSosBrowserRunnerForTests(async ({ lookups }) => {
+      actorCalls += 1;
+      return lookups.map((lookup) => ({
+        kind: 'detail',
+        cacheKey: lookup.cacheKey,
+        html: `Entity Name: ${lookup.companyName}\nPresident: PAT KIM\n`,
+        url: 'https://corp.sec.state.ma.us/corpweb/CorpSearch/CorpSummary.aspx',
+        httpStatus: 200,
+      }));
+    });
+    try {
+      const out = await resolveMassachusettsOwners([
+        { list_id: 'x', lead_id: 21, company_name: 'Acme Builders LLC', state: 'MA' },
+      ]);
+      assert.equal(actorCalls, 1);
+      assert.equal(out[0]?.people.length, 1);
+    } finally {
+      setBoardFetch(null);
+      setBoardCacheReadForTests(null);
+      setMaSosBrowserRunnerForTests(null);
+    }
+  });
+
+  it('does not run the browser on a parsed SOS no-results page', async () => {
+    setBoardCacheReadForTests(async () => null);
+    setBoardFetch(async (input) => {
+      if (String(input).includes('corp.sec.state.ma.us')) {
+        return new Response('No records were found matching your search.', { status: 200 });
+      }
+      return new Response('<html><body>Search</body></html>', { status: 200 });
+    });
+    let actorCalls = 0;
+    setMaSosBrowserRunnerForTests(async () => {
+      actorCalls += 1;
+      return [];
+    });
+    try {
+      const out = await resolveMassachusettsOwners([
+        { list_id: 'x', lead_id: 22, company_name: 'Acme Builders LLC', state: 'MA' },
+      ]);
+      assert.equal(actorCalls, 0);
+      assert.equal(out[0]?.people.length, 0);
+      assert.equal(out[0]?.coverage_reason, 'not_found');
+    } finally {
+      setBoardFetch(null);
+      setBoardCacheReadForTests(null);
+      setMaSosBrowserRunnerForTests(null);
+    }
+  });
+
+  it('posts OPSI viewstate + Search and parses a live SearchResults/Details fixture', async () => {
+    setBoardCacheReadForTests(async () => null);
+    const form = [
+      '<form method="post">',
+      '<input type="hidden" name="__VIEWSTATE" value="vs-live" />',
+      '<input type="hidden" name="__EVENTVALIDATION" value="ev-live" />',
+      '<select name="t_web_lookup__profession_name"><option value="Building Licenses" selected>Building Licenses</option></select>',
+      '<select name="t_web_lookup__license_type_name"><option value="">All</option><option value="Construction Supervisor">Construction Supervisor</option></select>',
+      '<input type="submit" name="sch_button" value="Search" />',
+      '</form>',
+    ].join('');
+    const postedBodies: string[] = [];
+    setBoardFetch(async (input, init) => {
+      const url = String(input);
+      if (url.includes('corp.sec.state.ma.us')) {
+        return new Response('No records were found matching your search.', { status: 200 });
+      }
+      if (url.includes('Details.aspx')) {
+        return new Response(fixture('ma-opsi-details.html'), { status: 200 });
+      }
+      if (url.includes('madpl.mylicense.com') && String(init?.method || 'GET').toUpperCase() === 'POST') {
+        postedBodies.push(String(init?.body || ''));
+        return new Response(fixture('ma-opsi-search-results.html'), {
+          status: 200,
+          headers: { Location: 'https://madpl.mylicense.com/Verification/SearchResults.aspx' },
+        });
+      }
+      if (url.includes('madpl.mylicense.com')) {
+        return new Response(form, { status: 200 });
+      }
+      return new Response('no', { status: 404 });
+    });
+    try {
+      const result = await resolveMaCsl(
+        { list_id: 'x', lead_id: 23, company_name: 'Acme Builders LLC', state: 'MA' },
+        undefined,
+        { skipBrowser: true },
+      );
+      assert.equal(postedBodies.length >= 1, true);
+      const body = postedBodies[0] || '';
+      assert.match(body, /__VIEWSTATE=vs-live/);
+      assert.match(body, /__EVENTVALIDATION=ev-live/);
+      assert.match(body, /sch_button=Search/);
+      assert.match(body, /t_web_lookup__profession_name=Building\+Licenses/);
+      assert.match(body, /t_web_lookup__license_type_name=/);
+      assert.equal(body.includes('Construction+Supervisor'), false);
+      assert.match(body, /ACME\+BUILDERS/);
+      assert.equal(body.includes('LLC'), false);
+      assert.equal(result.people.length, 1);
+      assert.equal(result.source, 'ma_csl');
+      assert.equal(result.coverage_reason, null);
+    } finally {
+      setBoardFetch(null);
+      setBoardCacheReadForTests(null);
     }
   });
 });

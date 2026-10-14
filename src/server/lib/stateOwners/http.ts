@@ -273,6 +273,7 @@ export class PacedBoardClient {
 }
 
 export function looksBlocked(status: number, body: string): boolean {
+  if (status === 0) return true;
   if (status === 403 || status === 401 || status === 429) return true;
   const text = body || '';
   const hasPayload =
