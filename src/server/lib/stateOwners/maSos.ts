@@ -1,7 +1,13 @@
 import { htmlToText, labeledValue, parseBoardPersonName, pickBestNameMatchScored, splitPersonName } from './names.js';
-import { DESKTOP_UA, apifyResidentialProxyConfigured, hasCaptchaOrTurnstile, looksBlocked, PacedBoardClient } from './http.js';
+import { DESKTOP_UA, hasCaptchaOrTurnstile, looksBlocked, PacedBoardClient } from './http.js';
 import { collectAspNetFields, collectAspNetSearchSubmit, cookiesFromList, hasAspNetState } from './aspNet.js';
-import { nameStateCacheKey, readBoardCache, writeBoardCache } from './cache.js';
+import {
+  formatMaCacheBypassLog,
+  isBlockedBoardCache,
+  nameStateCacheKey,
+  readBoardCache,
+  writeBoardCache,
+} from './cache.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
 
 export const MA_SOS_SEARCH = 'https://corp.sec.state.ma.us/corpweb/CorpSearch/CorpSearch.aspx';
@@ -157,10 +163,8 @@ export async function resolveMaSos(
   const key = nameStateCacheKey(name, 'MA-SOS');
   const cached = await readBoardCache('ma_sos', key);
   if (cached?.body != null && cached.http_status != null) {
-    if (looksBlocked(cached.http_status, cached.body)) {
-      if (!client.fetchFn && !apifyResidentialProxyConfigured()) {
-        return blockedResult(url, cached.http_status, cached.body, true);
-      }
+    if (isBlockedBoardCache(cached)) {
+      console.log(formatMaCacheBypassLog({ board: 'ma_sos', status: cached.http_status, body: cached.body }));
     } else {
       const parsed = parseMaSosText(cached.body, cached.fetched_url || url, name);
       if (isCacheableSosBody(cached.body, parsed)) {

@@ -1,4 +1,5 @@
 import { getSupabase, hasSupabase, ingestSecret } from '../supabase.js';
+import { incapsulaDetected, looksBlocked } from './http.js';
 import type { BoardSource } from './types.js';
 
 export interface BoardCacheRow {
@@ -56,10 +57,41 @@ export function nameStateCacheKey(name: string, state: string): string {
     .toUpperCase()}`;
 }
 
+/** Cached Incapsula / 4xx / WAF shells must not replace a live (or proxied) fetch. */
+export function isBlockedBoardCache(row: { http_status?: number | null; body?: string | null }): boolean {
+  const status = row.http_status ?? 0;
+  const body = row.body ?? '';
+  if (status >= 400) return true;
+  if (looksBlocked(status, body)) return true;
+  if (incapsulaDetected(body)) return true;
+  return false;
+}
+
+export function shouldReuseBoardCache(row: { http_status?: number | null; body?: string | null }): boolean {
+  if (row.body == null || row.http_status == null) return false;
+  return !isBlockedBoardCache(row);
+}
+
+export function formatMaCacheBypassLog(opts: {
+  board: string;
+  status?: number | null;
+  body?: string | null;
+}): string {
+  return `[ma-cache] board=${opts.board} bypass=blocked status=${opts.status ?? 0} incapsula=${incapsulaDetected(opts.body || '') ? 'yes' : 'no'}`;
+}
+
+type CacheRead = (board: BoardSource, cacheKey: string) => Promise<BoardCacheRow | null>;
+let cacheReadOverride: CacheRead | null = null;
+
+export function setBoardCacheReadForTests(fn: CacheRead | null): void {
+  cacheReadOverride = fn;
+}
+
 export async function readBoardCache(
   board: BoardSource,
   cacheKey: string,
 ): Promise<BoardCacheRow | null> {
+  if (cacheReadOverride) return cacheReadOverride(board, cacheKey);
   if (!hasSupabase()) return null;
   const { data, error } = await getSupabase().rpc('fetch_permit_parcel_board_cache', {
     p_secret: ingestSecret(),
@@ -91,6 +123,7 @@ export async function writeBoardCache(row: {
   query_string?: string | null;
   fetched_url?: string | null;
 }): Promise<void> {
+  if (cacheReadOverride) return;
   if (!hasSupabase()) return;
   const body = encodeCacheBody(row.body ?? '', {
     query_string: row.query_string,

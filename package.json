@@ -25,7 +25,7 @@
     "mcp": "tsx src/mcp/stdio.ts",
     "mcp:stdio": "node dist/mcp/stdio.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/server/lib/texasComptroller.test.ts src/server/lib/floridaSunbiz.test.ts src/server/lib/floridaSosKey.test.ts src/server/lib/contactScore.test.ts src/server/lib/permitstack.test.ts src/server/lib/stateOwners/cslb.test.ts src/server/lib/stateOwners/names.test.ts src/server/lib/stateOwners/router.test.ts src/server/lib/stateOwners/aspNet.test.ts src/server/lib/stateOwners/http.test.ts src/server/services/matchStateOwners.test.ts src/server/services/importCallingList.test.ts src/server/services/shovelsGeoTargets.test.ts src/server/services/shovelsPull.test.ts src/server/services/pullShovelsCallingList.test.ts src/server/parcels/parcels.test.ts"
+    "test": "tsx --test src/server/lib/texasComptroller.test.ts src/server/lib/floridaSunbiz.test.ts src/server/lib/floridaSosKey.test.ts src/server/lib/contactScore.test.ts src/server/lib/permitstack.test.ts src/server/lib/stateOwners/cslb.test.ts src/server/lib/stateOwners/names.test.ts src/server/lib/stateOwners/router.test.ts src/server/lib/stateOwners/aspNet.test.ts src/server/lib/stateOwners/http.test.ts src/server/lib/stateOwners/cache.test.ts src/server/lib/startupLog.test.ts src/server/services/matchStateOwners.test.ts src/server/services/importCallingList.test.ts src/server/services/shovelsGeoTargets.test.ts src/server/services/shovelsPull.test.ts src/server/services/pullShovelsCallingList.test.ts src/server/parcels/parcels.test.ts"
   },
   "engines": {
     "node": ">=20"

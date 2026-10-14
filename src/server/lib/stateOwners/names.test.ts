@@ -30,6 +30,8 @@ import { nyDosSearchUrl } from './nyDos.js';
 import { txTdlrSearchUrl } from './txTdlr.js';
 import { looksBlocked, setBoardFetch } from './http.js';
 import { resolveMaCsl } from './maCsl.js';
+import { setBoardCacheReadForTests } from './cache.js';
+import { resolveMaSos } from './maSos.js';
 import { parseNycDobJson } from './nycDob.js';
 import { parseWaLniJson, parseWaLniText } from './waLni.js';
 import { parseTxTdlrJson, parseTxTdlrText } from './txTdlr.js';
@@ -444,6 +446,7 @@ describe('other board parsers', () => {
 
 describe('MA license miss routes to SOS', () => {
   it('does not stop on Accela/OPSI block when SOS has officers', async () => {
+    setBoardCacheReadForTests(async () => null);
     setBoardFetch(async (input) => {
       const url = String(input);
       if (url.includes('elicensing21.mass.gov')) {
@@ -470,12 +473,64 @@ describe('MA license miss routes to SOS', () => {
       assert.equal(result.coverage_reason, null);
     } finally {
       setBoardFetch(null);
+      setBoardCacheReadForTests(null);
+    }
+  });
+
+  it('bypasses a cached Incapsula SOS row and live-fetches officers', async () => {
+    const prev = process.env.APIFY_PROXY_PASSWORD;
+    delete process.env.APIFY_PROXY_PASSWORD;
+    let fetches = 0;
+    setBoardCacheReadForTests(async (board) => {
+      if (board !== 'ma_sos') return null;
+      return {
+        board: 'ma_sos',
+        cache_key: 'x',
+        http_status: 200,
+        body: 'Request unsuccessful. Incapsula incident ID /_Incapsula_Resource',
+        fetched_at: '2026-10-14',
+      };
+    });
+    setBoardFetch(async (input) => {
+      fetches += 1;
+      const url = String(input);
+      if (url.includes('corp.sec.state.ma.us')) {
+        return new Response('Entity Name: ACME BUILDERS LLC\nPresident: PAT KIM\n', { status: 200 });
+      }
+      return new Response('Access Denied', { status: 404 });
+    });
+    try {
+      const result = await resolveMaSos({
+        list_id: 'x',
+        lead_id: 9,
+        company_name: 'Acme Builders LLC',
+        state: 'MA',
+      });
+      assert.equal(fetches >= 1, true);
+      assert.equal(result.cached, undefined);
+      assert.equal(result.people[0]?.last_name, 'KIM');
+    } finally {
+      setBoardFetch(null);
+      setBoardCacheReadForTests(null);
+      if (prev === undefined) delete process.env.APIFY_PROXY_PASSWORD;
+      else process.env.APIFY_PROXY_PASSWORD = prev;
     }
   });
 
   it('marks Imperva 200 as blocked without captcha so the proxy gate can retry', async () => {
+    const prev = process.env.APIFY_PROXY_PASSWORD;
+    const prevLower = process.env.apify_proxy_password;
+    process.env.APIFY_PROXY_PASSWORD = 'must-not-be-used';
+    delete process.env.apify_proxy_password;
+    setBoardCacheReadForTests(async () => null);
+    const hosts: string[] = [];
     setBoardFetch(async (input) => {
       const url = String(input);
+      try {
+        hosts.push(new URL(url).host);
+      } catch {
+        hosts.push('unknown');
+      }
       if (url.includes('corp.sec.state.ma.us')) {
         return new Response('Request unsuccessful. Incapsula incident ID /_Incapsula_Resource', { status: 200 });
       }
@@ -492,8 +547,21 @@ describe('MA license miss routes to SOS', () => {
       assert.equal(result.captcha, false);
       assert.equal(result.coverage_reason, 'blocked');
       assert.equal(result.people.length, 0);
+      assert.equal(hosts.includes('proxy.apify.com'), false);
+      assert.equal(shouldRetryMaViaProxy({
+        named: false,
+        captcha: result.captcha,
+        blocked: result.blocked,
+        coverage_reason: result.coverage_reason,
+        http_status: result.http_status,
+      }), true);
     } finally {
       setBoardFetch(null);
+      setBoardCacheReadForTests(null);
+      if (prev === undefined) delete process.env.APIFY_PROXY_PASSWORD;
+      else process.env.APIFY_PROXY_PASSWORD = prev;
+      if (prevLower === undefined) delete process.env.apify_proxy_password;
+      else process.env.apify_proxy_password = prevLower;
     }
   });
 });
