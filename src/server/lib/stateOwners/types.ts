@@ -82,6 +82,8 @@ export interface ResolverResult {
   cached?: boolean;
   http_status?: number | null;
   blocked?: boolean;
+  /** True when the page is Turnstile/captcha. Never retry those through a proxy. */
+  captcha?: boolean;
   /** How the company name was matched. Used for precision reports, not chat. */
   match_method?: 'exact' | 'substring' | 'trigram' | 'license';
   match_score?: number;

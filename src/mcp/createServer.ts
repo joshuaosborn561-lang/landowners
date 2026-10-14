@@ -12,6 +12,7 @@ import {
   setShovelsApiKey,
 } from '../server/lib/shovelsKey.js';
 import { hasSupabase, SCHEMA } from '../server/lib/supabase.js';
+import { apifyResidentialProxyConfigured } from '../server/lib/stateOwners/http.js';
 import { supabaseTargetMeta } from '../server/lib/supabaseTarget.js';
 import {
   listCallingLists,
@@ -139,6 +140,7 @@ async function healthPayload() {
     supabase_url: target.supabase_url,
     permitstack_api_configured: shovelsKey.configured,
     shovels_api_configured: shovelsKey.configured,
+    apify_residential_proxy_configured: apifyResidentialProxyConfigured(),
     permitstack_api_key: shovelsKey,
     shovels_api_key: shovelsKey,
     shovels_contractors_loaded: loadShovelsContractors().length,

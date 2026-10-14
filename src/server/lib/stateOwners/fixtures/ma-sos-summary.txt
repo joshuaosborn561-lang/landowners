@@ -1,0 +1,8 @@
+Business Entity Summary
+Summary for: ACME BUILDERS LLC
+Exact Name: ACME BUILDERS LLC
+The Officers and Directors of the Corporation:
+Title Individual Name Address
+PRESIDENT PAT KIM 1 MAIN ST BOSTON, MA 02108 USA
+TREASURER PAT KIM 1 MAIN ST BOSTON, MA 02108 USA
+SECRETARY JORDAN LEE 1 MAIN ST BOSTON, MA 02108 USA

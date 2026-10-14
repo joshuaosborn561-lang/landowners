@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { collectAspNetFields, cookiesFromList, hasAspNetState } from './aspNet.js';
+import { collectAspNetFields, collectAspNetSearchSubmit, cookiesFromList, hasAspNetState } from './aspNet.js';
 
 describe('collectAspNetFields', () => {
   it('carries VIEWSTATE and EVENTVALIDATION and skips submit buttons', () => {
@@ -18,6 +18,7 @@ describe('collectAspNetFields', () => {
     assert.equal(fields.sch_button, undefined);
     assert.equal(fields.board, 'OPSI');
     assert.equal(hasAspNetState(fields), true);
+    assert.equal(collectAspNetSearchSubmit(html).sch_button, 'Search');
   });
 });
 

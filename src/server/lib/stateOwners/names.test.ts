@@ -22,7 +22,8 @@ import { parsePaOpenDataJson } from './paOpenData.js';
 import { sodaWhereContains, sodaWhereContainsLoose } from './soda.js';
 import { pickTxFranchiseRow } from './txOpenData.js';
 import { decodeCacheBody, encodeCacheBody } from './cache.js';
-import { parseMaSosText } from './maSos.js';
+import { parseMaSosResultLinks, parseMaSosText } from './maSos.js';
+import { shouldRetryMaViaProxy } from './http.js';
 import { parsePaDosText } from './paDos.js';
 import { nycDobSearchUrl } from './nycDob.js';
 import { nyDosSearchUrl } from './nyDos.js';
@@ -317,6 +318,28 @@ describe('other board parsers', () => {
     assert.equal(parsePaHicText('<div class="cf-turnstile"></div>', 'u').coverage_reason, 'blocked');
     assert.equal(parsePaDosText('Entity Name: ACME BUILDERS LLC\nPresident: RILEY COHEN\n', 'u', 'Acme Builders LLC').people[0]?.source, 'pa_dos');
     assert.equal(parseMaSosText('Entity Name: ACME BUILDERS LLC\nPresident: PAT KIM\n', 'u', 'Acme Builders LLC').people[0]?.source, 'ma_sos');
+    const table = parseMaSosText(fixture('ma-sos-summary.txt'), 'u', 'Acme Builders LLC');
+    assert.equal(table.people.length >= 2, true);
+    assert.equal(table.people[0]?.last_name, 'KIM');
+    assert.equal(table.match_method, 'exact');
+    const links = parseMaSosResultLinks(
+      '<a href="CorpSummary.aspx?sysvalue=abc">ACME BUILDERS LLC</a><a href="CorpSummary.aspx?sysvalue=def">OTHER LLC</a>',
+    );
+    assert.equal(links.length, 2);
+    assert.match(links[0]!.url, /CorpSummary\.aspx\?sysvalue=abc/);
+  });
+
+  it('retries an Imperva 200 SOS miss through the residential proxy gate', () => {
+    assert.equal(
+      shouldRetryMaViaProxy({
+        named: false,
+        blocked: true,
+        coverage_reason: 'blocked',
+        http_status: 200,
+        body: '_Incapsula_Resource',
+      }),
+      true,
+    );
   });
 
   it('ignores Accela chrome that only says Licensee', () => {
@@ -445,6 +468,30 @@ describe('MA license miss routes to SOS', () => {
       assert.equal(result.people.length, 1);
       assert.equal(result.people[0]?.last_name, 'KIM');
       assert.equal(result.coverage_reason, null);
+    } finally {
+      setBoardFetch(null);
+    }
+  });
+
+  it('marks Imperva 200 as blocked without captcha so the proxy gate can retry', async () => {
+    setBoardFetch(async (input) => {
+      const url = String(input);
+      if (url.includes('corp.sec.state.ma.us')) {
+        return new Response('Request unsuccessful. Incapsula incident ID /_Incapsula_Resource', { status: 200 });
+      }
+      return new Response('Access Denied', { status: 403 });
+    });
+    try {
+      const result = await resolveMaCsl({
+        list_id: 'x',
+        lead_id: 2,
+        company_name: 'Acme Builders LLC',
+        state: 'MA',
+      });
+      assert.equal(result.blocked, true);
+      assert.equal(result.captcha, false);
+      assert.equal(result.coverage_reason, 'blocked');
+      assert.equal(result.people.length, 0);
     } finally {
       setBoardFetch(null);
     }
