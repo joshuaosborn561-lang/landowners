@@ -137,6 +137,7 @@ export function looksBlocked(status: number, body: string): boolean {
     );
   // Cloudflare Turnstile on an otherwise empty search shell is a block.
   if (/cf-turnstile|challenges\.cloudflare\.com\/turnstile/i.test(text) && !hasPayload) return true;
+  if (/_Incapsula_Resource|incapsula/i.test(text) && !hasPayload) return true;
   // Real board pages often include a reCAPTCHA widget; only treat challenge shells as blocked.
   if (
     /just a moment|cf-mitigation|access denied|unusual traffic|please complete the captcha|enable javascript and cookies to continue/i.test(

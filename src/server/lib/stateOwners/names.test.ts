@@ -406,6 +406,17 @@ describe('other board parsers', () => {
     assert.equal(result.people[0]?.last_name, 'JONES');
     assert.equal(result.people[0]?.confidence, 'medium');
   });
+
+  it('joins a MN qualifier on the same phone when addresses differ', () => {
+    const csv = [
+      'Bus_Pers,License_Type,License_Subtype,Name,DBA_Name,Addr1,Addr2,City,St,Zip,Phone_No,Email_Address,Lic_Number,Status,Orig_Date,Exp_Date,Enforcement_Action,Renewal_in_Progress',
+      'Business,Residential Contractors,Residential Building Contractor,ACME BUILDERS LLC,,200 OAK ST,,MINNEAPOLIS,MN,55401,6125550100,,BC000222,Issued,,,,',
+      'Personal,Residential Contractors,Qualifying Builder,"JONES, PAT",,9 PINE AVE,,BLOOMINGTON,MN,55420,6125550100,,QB000222,Issued,,,,',
+    ].join('\n');
+    const result = parseMnDliCsv(csv, 'Acme Builders LLC', 'u');
+    assert.equal(result.people[0]?.last_name, 'JONES');
+    assert.equal(result.coverage_reason, null);
+  });
 });
 
 describe('MA license miss routes to SOS', () => {

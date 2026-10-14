@@ -243,9 +243,8 @@ async function resolveMaCslOnce(
 
   const hit = attempts.find((a) => a.people.length);
   if (hit) return hit;
-  if (attempts.length && attempts.every((a) => a.coverage_reason === 'blocked')) {
-    return attempts[attempts.length - 1]!;
-  }
+  const blocked = attempts.find((a) => a.blocked || a.coverage_reason === 'blocked');
+  if (blocked) return { ...blocked, coverage_reason: 'blocked', blocked: true };
   if (!license && !businessName) {
     return { people: [], coverage_reason: 'no_license_number', source: 'ma_csl', source_url: ACCELA };
   }

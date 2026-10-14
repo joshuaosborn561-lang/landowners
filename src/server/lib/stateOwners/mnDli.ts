@@ -56,6 +56,26 @@ function addrKey(row: MnRow): string {
   return `${normalizeCompanyName(row.Addr1 || '')}|${normalizeCompanyName(row.City || '')}`;
 }
 
+function phoneKey(row: MnRow): string {
+  const digits = String(row.Phone_No || '').replace(/\D/g, '');
+  return digits.length >= 10 ? digits.slice(-10) : '';
+}
+
+function streetZipKey(row: MnRow): string {
+  const street = String(row.Addr1 || '')
+    .trim()
+    .toUpperCase()
+    .split(/\s+/)[0] || '';
+  const zip = String(row.Zip || '').replace(/\D/g, '').slice(0, 5);
+  return street && zip.length === 5 && /^\d+$/.test(street) ? `${street}|${zip}` : '';
+}
+
+function pickUnique(rows: MnRow[]): MnRow | null {
+  if (rows.length === 1) return rows[0]!;
+  if (rows.length > 1) return rows[0]!;
+  return null;
+}
+
 function isIssued(row: MnRow): boolean {
   return /issued/i.test(row.Status || '');
 }
@@ -95,11 +115,11 @@ export function parseMnDliCsv(text: string, companyName: string, sourceUrl: stri
   let qualifier: MnRow | null = null;
   if (biz) {
     const key = addrKey(biz);
-    if (key && key !== '|') {
-      const atAddr = peopleRows.filter((r) => addrKey(r) === key);
-      if (atAddr.length === 1) qualifier = atAddr[0]!;
-      else if (atAddr.length > 1) qualifier = atAddr[0]!;
-    }
+    if (key && key !== '|') qualifier = pickUnique(peopleRows.filter((r) => addrKey(r) === key));
+    const phone = phoneKey(biz);
+    if (!qualifier && phone) qualifier = pickUnique(peopleRows.filter((r) => phoneKey(r) === phone));
+    const streetZip = streetZipKey(biz);
+    if (!qualifier && streetZip) qualifier = pickUnique(peopleRows.filter((r) => streetZipKey(r) === streetZip));
     if (!qualifier) {
       const city = normalizeCompanyName(biz.City || '');
       const sameCity = peopleRows.filter((r) => normalizeCompanyName(r.City || '') === city && city);
