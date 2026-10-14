@@ -86,17 +86,20 @@ export async function resolveMaSos(
   const cached = await readBoardCache('ma_sos', key);
   if (cached?.body != null && cached.http_status != null) {
     if (looksBlocked(cached.http_status, cached.body)) {
-      return {
-        people: [],
-        coverage_reason: 'blocked',
-        source: 'ma_sos',
-        source_url: url,
-        cached: true,
-        blocked: true,
-        http_status: cached.http_status,
-      };
+      if (!client.fetchFn) {
+        return {
+          people: [],
+          coverage_reason: 'blocked',
+          source: 'ma_sos',
+          source_url: url,
+          cached: true,
+          blocked: true,
+          http_status: cached.http_status,
+        };
+      }
+    } else {
+      return { ...parseMaSosText(cached.body, url, name), cached: true, http_status: cached.http_status };
     }
-    return { ...parseMaSosText(cached.body, url, name), cached: true, http_status: cached.http_status };
   }
 
   const got = await client.get(url);

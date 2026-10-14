@@ -12,8 +12,15 @@ import {
   parseBoardPersonName,
   personKey,
   pickBestNameMatch,
+  pickBestNameMatchScored,
+  sodaNameNeedle,
   splitPersonName,
+  trigramSimilarity,
 } from './names.js';
+import { parseNyOpenDataJson } from './nyOpenData.js';
+import { parsePaOpenDataJson } from './paOpenData.js';
+import { sodaWhereContains, sodaWhereContainsLoose } from './soda.js';
+import { pickTxFranchiseRow } from './txOpenData.js';
 import { decodeCacheBody, encodeCacheBody } from './cache.js';
 import { parseMaSosText } from './maSos.js';
 import { parsePaDosText } from './paDos.js';
@@ -133,6 +140,111 @@ describe('normalized name match', () => {
   });
 });
 
+describe('trigram fallback', () => {
+  it('scores near-equal names above the threshold and rejects unrelated ones', () => {
+    assert.ok(trigramSimilarity('JOHNSON MECHANICAL GROUP', 'JOHNSON MECHNICAL GRP') >= 0.48);
+    assert.ok(trigramSimilarity('ACME BUILDERS', 'ZETA ROOFING') < 0.4);
+    const hit = pickBestNameMatchScored(
+      'Johnson Mechanical Group LLC',
+      [{ n: 'JOHNSON MECHNICAL GRP', city: 'Austin' }, { n: 'ZETA ROOFING', city: 'Dallas' }],
+      (r) => r.n,
+      { allowTrigram: true, city: 'Austin', cityOf: (r) => r.city },
+    );
+    assert.equal(hit?.item.n, 'JOHNSON MECHNICAL GRP');
+    assert.equal(hit?.method, 'trigram');
+    assert.equal(sodaNameNeedle('Smith HVAC, LLC DBA Cool'), 'SMITH HVAC');
+    assert.match(sodaWhereContains('business_name', 'Smith HVAC Heating Cooling LLC'), /SMITH/);
+    assert.match(sodaWhereContains('business_name', 'Smith HVAC Heating Cooling LLC'), /COOLING/);
+    assert.match(sodaWhereContainsLoose('business_name', 'Smith HVAC Heating Cooling LLC'), /SMITH/);
+    assert.match(sodaWhereContainsLoose('business_name', 'Smith HVAC Heating Cooling LLC'), /HVAC/);
+    assert.equal(sodaWhereContainsLoose('business_name', 'Smith HVAC Heating Cooling LLC').includes('COOLING'), false);
+  });
+});
+
+describe('open-data parsers', () => {
+  it('reads a NY chairman from official corp JSON', () => {
+    const result = parseNyOpenDataJson(
+      [
+        {
+          current_entity_name: 'ACME BUILDERS LLC',
+          chairman_name: 'PAT KIM',
+          location_city: 'BROOKLYN',
+        },
+      ],
+      'Acme Builders, Inc.',
+      'u',
+      'Brooklyn',
+    );
+    assert.equal(result.people.length, 1);
+    assert.equal(result.people[0]?.last_name, 'KIM');
+    assert.equal(result.coverage_reason, null);
+  });
+
+  it('uses a person-style NY DOS process name when chairman is empty', () => {
+    const result = parseNyOpenDataJson(
+      [
+        {
+          current_entity_name: 'ACME BUILDERS LLC',
+          dos_process_name: 'PAT KIM',
+          location_city: 'BROOKLYN',
+        },
+      ],
+      'Acme Builders LLC',
+      'u',
+      'Brooklyn',
+    );
+    assert.equal(result.people.length, 1);
+    assert.equal(result.people[0]?.last_name, 'KIM');
+  });
+
+  it('picks a TX franchise taxpayer by normalized name', () => {
+    const hit = pickTxFranchiseRow(
+      [
+        { taxpayer_number: '123', taxpayer_name: 'ACME BUILDERS INC', taxpayer_city: 'AUSTIN', taxpayer_zip: '78701' },
+        { taxpayer_number: '999', taxpayer_name: 'ZETA ROOFING LLC', taxpayer_city: 'DALLAS', taxpayer_zip: '75201' },
+      ],
+      'Acme Builders LLC',
+      'Austin',
+      '78701',
+    );
+    assert.equal(hit?.taxpayerId, '123');
+    assert.equal(hit?.method, 'exact');
+  });
+
+  it('reads PA officers from the registered-business dump', () => {
+    const result = parsePaOpenDataJson(
+      [
+        {
+          business_name: 'ACME BUILDERS LLC',
+          filing_number: '1',
+          first_name: 'PAT',
+          last_name: 'KIM',
+          party_type: 'President',
+          city: 'PHILADELPHIA',
+          zip: '19103',
+        },
+      ],
+      'Acme Builders LLC',
+      'u',
+      'Philadelphia',
+      '19103',
+    );
+    assert.equal(result.people.length, 1);
+    assert.equal(result.people[0]?.last_name, 'KIM');
+    assert.equal(result.source, 'pa_dos');
+  });
+
+  it('returns name_miss when rows exist but the company does not match', () => {
+    const result = parsePaOpenDataJson(
+      [{ business_name: 'ZETA ROOFING LLC', first_name: 'A', last_name: 'B', party_type: 'Owner' }],
+      'Acme Builders LLC',
+      'u',
+    );
+    assert.equal(result.people.length, 0);
+    assert.equal(result.coverage_reason, 'name_miss');
+  });
+});
+
 describe('cache query/url envelope', () => {
   it('round-trips query string and fetched URL without leaking into parse text', () => {
     const wrapped = encodeCacheBody('License Status This license is current and active.', {
@@ -152,7 +264,8 @@ describe('name-search URLs', () => {
     assert.match(nycDobSearchUrl({ businessName: "O'BRIEN HVAC LLC" }).query_string, /business_name/i);
     assert.equal(nyDosSearchUrl('Smith HVAC, LLC DBA Cool').query_string, 'searchName=SMITH HVAC');
     assert.equal(txTdlrSearchUrl({ license: 'TECL-009' }).query_string, 'license_number=009');
-    assert.match(txTdlrSearchUrl({ businessName: 'Smith HVAC LLC' }).query_string, /SMITH HVAC LLC/i);
+    assert.match(txTdlrSearchUrl({ businessName: 'Smith HVAC LLC' }).query_string, /SMITH/);
+    assert.match(txTdlrSearchUrl({ businessName: 'Smith HVAC LLC' }).query_string, /HVAC/);
   });
 });
 
@@ -236,6 +349,23 @@ describe('other board parsers', () => {
     assert.equal(result.coverage_reason, 'not_found');
   });
 
+  it('accepts a name-matched TDLR owner when the license type is not HVAC/electrical', () => {
+    const result = parseTxTdlrJson(
+      [
+        {
+          license_type: 'General Contractor',
+          business_name: 'ACME BUILDERS LLC',
+          owner_name: 'LEE, SAM',
+          license_expiration_date_mmddccyy: '01012099',
+        },
+      ],
+      'u',
+      'Acme Builders LLC',
+    );
+    assert.equal(result.people[0]?.last_name, 'LEE');
+    assert.equal(result.coverage_reason, null);
+  });
+
   it('parses WA L&I principal JSON as LAST, FIRST', () => {
     const result = parseWaLniJson(
       [{ principalname: 'BAKER, ALICE M', contractorlicensenumber: 'STATUEC903MA' }],
@@ -275,6 +405,17 @@ describe('other board parsers', () => {
     assert.equal(result.people[0]?.role, 'qualifying_individual');
     assert.equal(result.people[0]?.last_name, 'JONES');
     assert.equal(result.people[0]?.confidence, 'medium');
+  });
+
+  it('joins a MN qualifier on the same phone when addresses differ', () => {
+    const csv = [
+      'Bus_Pers,License_Type,License_Subtype,Name,DBA_Name,Addr1,Addr2,City,St,Zip,Phone_No,Email_Address,Lic_Number,Status,Orig_Date,Exp_Date,Enforcement_Action,Renewal_in_Progress',
+      'Business,Residential Contractors,Residential Building Contractor,ACME BUILDERS LLC,,200 OAK ST,,MINNEAPOLIS,MN,55401,6125550100,,BC000222,Issued,,,,',
+      'Personal,Residential Contractors,Qualifying Builder,"JONES, PAT",,9 PINE AVE,,BLOOMINGTON,MN,55420,6125550100,,QB000222,Issued,,,,',
+    ].join('\n');
+    const result = parseMnDliCsv(csv, 'Acme Builders LLC', 'u');
+    assert.equal(result.people[0]?.last_name, 'JONES');
+    assert.equal(result.coverage_reason, null);
   });
 });
 

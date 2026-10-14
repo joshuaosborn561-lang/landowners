@@ -3,6 +3,7 @@ import {
   normalizeCompanyName,
   parseBoardPersonName,
   pickBestNameMatch,
+  pickBestNameMatchScored,
   splitPersonName,
 } from './names.js';
 import { looksBlocked, PacedBoardClient } from './http.js';
@@ -11,6 +12,9 @@ import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
 
 const LOOKUP = 'https://www.dli.mn.gov/license-and-registration-lookup';
 const RESIDENTIAL = 'https://secure.doli.state.mn.us/ccld/data/MNDLILicRegCertExport_Residential_Contractors.csv';
+const ELECTRICAL = 'https://secure.doli.state.mn.us/ccld/data/MNDLILicRegCertExport_Electrical.csv';
+const PLUMBING = 'https://secure.doli.state.mn.us/ccld/data/MNDLILicRegCertExport_Plumbing.csv';
+const MN_CSVS = [RESIDENTIAL, ELECTRICAL, PLUMBING];
 
 export function parseCsvLine(line: string): string[] {
   const out: string[] = [];
@@ -52,6 +56,26 @@ function addrKey(row: MnRow): string {
   return `${normalizeCompanyName(row.Addr1 || '')}|${normalizeCompanyName(row.City || '')}`;
 }
 
+function phoneKey(row: MnRow): string {
+  const digits = String(row.Phone_No || '').replace(/\D/g, '');
+  return digits.length >= 10 ? digits.slice(-10) : '';
+}
+
+function streetZipKey(row: MnRow): string {
+  const street = String(row.Addr1 || '')
+    .trim()
+    .toUpperCase()
+    .split(/\s+/)[0] || '';
+  const zip = String(row.Zip || '').replace(/\D/g, '').slice(0, 5);
+  return street && zip.length === 5 && /^\d+$/.test(street) ? `${street}|${zip}` : '';
+}
+
+function pickUnique(rows: MnRow[]): MnRow | null {
+  if (rows.length === 1) return rows[0]!;
+  if (rows.length > 1) return rows[0]!;
+  return null;
+}
+
 function isIssued(row: MnRow): boolean {
   return /issued/i.test(row.Status || '');
 }
@@ -73,13 +97,17 @@ export function parseMnDliCsv(text: string, companyName: string, sourceUrl: stri
   }
 
   const businesses = rows.filter((r) => !isPerson(r));
-  const exact = businesses.filter((r) => {
-    const name = r.Name || '';
-    const dba = r.DBA_Name || '';
-    return Boolean(pickBestNameMatch(target, [name, dba], (n) => n));
-  });
-  const biz = exact.find(isIssued) || exact[0] || null;
-  if (exact.length && !exact.some(isIssued)) {
+  const scored = pickBestNameMatchScored(
+    target,
+    businesses,
+    (r) => `${r.Name || ''} ${r.DBA_Name || ''}`,
+    { allowTrigram: true },
+  );
+  const exact = scored
+    ? businesses.filter((r) => r === scored.item || pickBestNameMatch(target, [r.Name || '', r.DBA_Name || ''], (n) => n))
+    : businesses.filter((r) => Boolean(pickBestNameMatch(target, [r.Name || '', r.DBA_Name || ''], (n) => n)));
+  const biz = exact.find(isIssued) || exact[0] || scored?.item || null;
+  if (exact.length && !exact.some(isIssued) && !isIssued(biz || {})) {
     return { people: [], coverage_reason: 'inactive_license', source: 'mn_dli', source_url: sourceUrl };
   }
 
@@ -87,9 +115,15 @@ export function parseMnDliCsv(text: string, companyName: string, sourceUrl: stri
   let qualifier: MnRow | null = null;
   if (biz) {
     const key = addrKey(biz);
-    if (key && key !== '|') {
-      const atAddr = peopleRows.filter((r) => addrKey(r) === key);
-      if (atAddr.length === 1) qualifier = atAddr[0]!;
+    if (key && key !== '|') qualifier = pickUnique(peopleRows.filter((r) => addrKey(r) === key));
+    const phone = phoneKey(biz);
+    if (!qualifier && phone) qualifier = pickUnique(peopleRows.filter((r) => phoneKey(r) === phone));
+    const streetZip = streetZipKey(biz);
+    if (!qualifier && streetZip) qualifier = pickUnique(peopleRows.filter((r) => streetZipKey(r) === streetZip));
+    if (!qualifier) {
+      const city = normalizeCompanyName(biz.City || '');
+      const sameCity = peopleRows.filter((r) => normalizeCompanyName(r.City || '') === city && city);
+      if (sameCity.length === 1) qualifier = sameCity[0]!;
     }
   }
 
@@ -128,6 +162,16 @@ export function parseMnDliCsv(text: string, companyName: string, sourceUrl: stri
 
   if (biz && looksLikeSolePropPerson(companyName)) {
     return { people: [], coverage_reason: 'sole_prop_dba', source: 'mn_dli', source_url: sourceUrl };
+  }
+  if (biz) {
+    return {
+      people: [],
+      coverage_reason: 'name_miss',
+      source: 'mn_dli',
+      source_url: sourceUrl,
+      match_method: scored?.method,
+      match_score: scored?.score,
+    };
   }
   return { people: [], coverage_reason: 'not_found', source: 'mn_dli', source_url: sourceUrl };
 }
@@ -188,48 +232,53 @@ export async function resolveMnDli(
         http_status: cached.http_status,
       };
     }
-    if (/Bus_Pers,License_Type/.test(cached.body) || /\t/.test(cached.body)) {
-      return { ...parseMnDliCsv(cached.body, lead.company_name, RESIDENTIAL), cached: true, http_status: cached.http_status };
+    if (/^MN_CSV_OK\b/.test(cached.body)) {
+      // Fall through to the in-process full CSV memo. Short slices were stale.
+    } else if (/Bus_Pers,License_Type/.test(cached.body) || /\t/.test(cached.body)) {
+      const lines = cached.body.split(/\r?\n/).filter((l) => l.trim()).length;
+      if (lines >= 50) {
+        return { ...parseMnDliCsv(cached.body, lead.company_name, RESIDENTIAL), cached: true, http_status: cached.http_status };
+      }
+    } else {
+      return { ...parseMnDliText(cached.body, LOOKUP), cached: true, http_status: cached.http_status };
     }
-    return { ...parseMnDliText(cached.body, LOOKUP), cached: true, http_status: cached.http_status };
   }
 
   let csvText = csvMemo && Date.now() - csvMemo.fetchedAt < 6 * 60 * 60 * 1000 ? csvMemo.text : null;
   let status = 200;
   if (!csvText) {
-    const got = await client.get(RESIDENTIAL, { headers: { Accept: '*/*' } });
-    status = got.status;
-    if (looksBlocked(got.status, got.body)) {
-      await writeBoardCache({ board: 'mn_dli', cache_key: key, http_status: got.status, body: got.body });
-      return {
-        people: [],
-        coverage_reason: 'blocked',
-        source: 'mn_dli',
-        source_url: RESIDENTIAL,
-        blocked: true,
-        http_status: got.status,
-      };
+    const chunks: string[] = [];
+    for (const url of MN_CSVS) {
+      const got = await client.get(url, { headers: { Accept: '*/*' } });
+      status = got.status;
+      if (looksBlocked(got.status, got.body)) {
+        await writeBoardCache({ board: 'mn_dli', cache_key: key, http_status: got.status, body: got.body });
+        return {
+          people: [],
+          coverage_reason: 'blocked',
+          source: 'mn_dli',
+          source_url: url,
+          blocked: true,
+          http_status: got.status,
+        };
+      }
+      if (got.status !== 200) continue;
+      chunks.push(chunks.length ? got.body.replace(/^[^\n]+\n/, '') : got.body);
     }
-    if (got.status !== 200) {
-      await writeBoardCache({ board: 'mn_dli', cache_key: key, http_status: got.status, body: got.body });
-      return { people: [], coverage_reason: 'not_found', source: 'mn_dli', source_url: RESIDENTIAL, http_status: got.status };
+    if (!chunks.length) {
+      await writeBoardCache({ board: 'mn_dli', cache_key: key, http_status: status, body: '' });
+      return { people: [], coverage_reason: 'not_found', source: 'mn_dli', source_url: RESIDENTIAL, http_status: status };
     }
-    csvText = got.body;
+    csvText = chunks.join('\n');
     csvMemo = { fetchedAt: Date.now(), text: csvText };
   }
 
   const parsed = parseMnDliCsv(csvText, lead.company_name, RESIDENTIAL);
-  const needle = normalizeCompanyName(lead.company_name).slice(0, 8);
-  const slice = csvText
-    .split(/\r?\n/)
-    .filter((line, i) => i === 0 || (needle && line.toUpperCase().includes(needle)))
-    .slice(0, 8)
-    .join('\n');
   await writeBoardCache({
     board: 'mn_dli',
     cache_key: key,
     http_status: status,
-    body: slice || csvText.slice(0, 500),
+    body: `MN_CSV_OK\t${normalizeCompanyName(lead.company_name)}\t${parsed.coverage_reason || 'named'}\t${parsed.people.length}`,
     query_string: `name=${normalizeCompanyName(lead.company_name) || lead.company_name}`,
     fetched_url: RESIDENTIAL,
   });

@@ -1,5 +1,5 @@
 import { htmlToText, parseBoardPersonName, splitPersonName } from './names.js';
-import { DESKTOP_UA, looksBlocked, PacedBoardClient } from './http.js';
+import { DESKTOP_UA, createResidentialProxyFetch, isPlainHttpBlock, looksBlocked, PacedBoardClient } from './http.js';
 import { collectAspNetFields, cookiesFromList, hasAspNetState } from './aspNet.js';
 import { licenseCacheKey, nameStateCacheKey, readBoardCache, writeBoardCache } from './cache.js';
 import { resolveMaSos } from './maSos.js';
@@ -180,7 +180,12 @@ async function lookupMaLicense(
     ? licenseCacheKey(query.license)
     : nameStateCacheKey(query.businessName || lead.company_name, 'MA');
   const cached = await readBoardCache('ma_csl', cacheKey);
-  if (cached?.body != null && cached.http_status != null && !looksBlocked(cached.http_status, cached.body)) {
+  if (
+    cached?.body != null &&
+    cached.http_status != null &&
+    !looksBlocked(cached.http_status, cached.body) &&
+    hasRealMaResult(cached.body)
+  ) {
     return { ...parseMaCslText(cached.body, ACCELA), cached: true, http_status: cached.http_status };
   }
 
@@ -219,9 +224,10 @@ async function lookupMaLicense(
   return { ...parsed, coverage_reason: parsed.coverage_reason || 'not_found', http_status: opsi.status };
 }
 
-export async function resolveMaCsl(
+async function resolveMaCslOnce(
   lead: OwnerLead,
-  client: PacedBoardClient = new PacedBoardClient({ source: 'ma_csl' }),
+  client: PacedBoardClient,
+  sosClient: PacedBoardClient,
 ): Promise<ResolverResult> {
   const license = String(lead.license_number || '').trim();
   const businessName = lead.company_name?.trim() || '';
@@ -232,14 +238,13 @@ export async function resolveMaCsl(
     attempts.push(await lookupMaLicense(lead, { businessName }, client));
   }
   if (businessName && !attempts.some((a) => a.people.length)) {
-    attempts.push(await resolveMaSos(lead, new PacedBoardClient({ source: 'ma_sos' })));
+    attempts.push(await resolveMaSos(lead, sosClient));
   }
 
   const hit = attempts.find((a) => a.people.length);
   if (hit) return hit;
-  if (attempts.length && attempts.every((a) => a.coverage_reason === 'blocked')) {
-    return attempts[attempts.length - 1]!;
-  }
+  const blocked = attempts.find((a) => a.blocked || a.coverage_reason === 'blocked');
+  if (blocked) return { ...blocked, coverage_reason: 'blocked', blocked: true };
   if (!license && !businessName) {
     return { people: [], coverage_reason: 'no_license_number', source: 'ma_csl', source_url: ACCELA };
   }
@@ -251,5 +256,28 @@ export async function resolveMaCsl(
       source: 'ma_csl',
       source_url: ACCELA,
     }
+  );
+}
+
+export async function resolveMaCsl(
+  lead: OwnerLead,
+  client: PacedBoardClient = new PacedBoardClient({ source: 'ma_csl' }),
+): Promise<ResolverResult> {
+  const first = await resolveMaCslOnce(lead, client, new PacedBoardClient({ source: 'ma_sos' }));
+  if (first.people.length) return first;
+  const status = first.http_status ?? 0;
+  if (first.blocked && status === 200) return first;
+  const canProxy =
+    first.coverage_reason === 'blocked' ||
+    first.coverage_reason === 'not_found' ||
+    isPlainHttpBlock(status, '') ||
+    status === 404;
+  if (!canProxy) return first;
+  const proxyFetch = client.fetchFn || (await createResidentialProxyFetch());
+  if (!proxyFetch || client.fetchFn) return first;
+  return resolveMaCslOnce(
+    lead,
+    new PacedBoardClient({ source: 'ma_csl', fetch: proxyFetch }),
+    new PacedBoardClient({ source: 'ma_sos', fetch: proxyFetch }),
   );
 }

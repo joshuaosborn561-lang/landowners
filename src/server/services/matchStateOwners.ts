@@ -3,6 +3,7 @@ import { getSupabase, hasSupabase, ingestSecret } from '../lib/supabase.js';
 import { supabaseTargetMeta } from '../lib/supabaseTarget.js';
 import {
   BoardJobStopError,
+  COVERAGE_REASONS,
   personKey,
   resolveLeadByState,
   resolveCslb,
@@ -58,14 +59,7 @@ interface StateStats {
 }
 
 function emptyCoverage(): Record<CoverageReason, number> {
-  return {
-    not_found: 0,
-    inactive_license: 0,
-    no_license_number: 0,
-    sole_prop_dba: 0,
-    blocked: 0,
-    parse_error: 0,
-  };
+  return Object.fromEntries(COVERAGE_REASONS.map((r) => [r, 0])) as Record<CoverageReason, number>;
 }
 
 function emptyStats(): StateStats {

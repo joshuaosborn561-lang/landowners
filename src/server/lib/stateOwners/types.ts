@@ -14,10 +14,13 @@ export type OwnerRole = (typeof OWNER_ROLES)[number];
 export const COVERAGE_REASONS = [
   'not_found',
   'inactive_license',
+  'inactive',
   'no_license_number',
   'sole_prop_dba',
   'blocked',
   'parse_error',
+  'name_miss',
+  'no_source',
 ] as const;
 
 export type CoverageReason = (typeof COVERAGE_REASONS)[number];
@@ -79,6 +82,9 @@ export interface ResolverResult {
   cached?: boolean;
   http_status?: number | null;
   blocked?: boolean;
+  /** How the company name was matched. Used for precision reports, not chat. */
+  match_method?: 'exact' | 'substring' | 'trigram' | 'license';
+  match_score?: number;
 }
 
 export class BoardJobStopError extends Error {
@@ -102,10 +108,18 @@ export interface SampleOwnerRow {
   coverage_reason: CoverageReason | null;
   review_flag?: boolean;
   has_business_phone?: boolean;
+  match_method?: ResolverResult['match_method'] | null;
+  match_score?: number | null;
 }
 
 export function sampleOwnerRows(
-  results: Array<{ people: OwnerPerson[]; coverage_reason: CoverageReason | null; source: BoardSource }>,
+  results: Array<{
+    people: OwnerPerson[];
+    coverage_reason: CoverageReason | null;
+    source: BoardSource;
+    match_method?: ResolverResult['match_method'];
+    match_score?: number;
+  }>,
   n = 10,
 ): SampleOwnerRow[] {
   return results.slice(0, n).map((r) => {
@@ -117,6 +131,8 @@ export function sampleOwnerRows(
       coverage_reason: r.coverage_reason,
       review_flag: person?.review_flag,
       has_business_phone: Boolean(person?.business_phone || null),
+      match_method: r.match_method ?? null,
+      match_score: r.match_score ?? null,
     };
   });
 }

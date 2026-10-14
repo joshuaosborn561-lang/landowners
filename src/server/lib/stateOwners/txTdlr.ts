@@ -1,4 +1,4 @@
-import { hasCompanyWord, htmlToText, namesMatchNormalized, parseBoardPersonName, pickBestNameMatch, splitPersonName } from './names.js';
+import { hasCompanyWord, htmlToText, namesMatchNormalized, parseBoardPersonName, pickBestNameMatch, pickBestNameMatchScored, sodaNameNeedle, splitPersonName } from './names.js';
 import { looksBlocked, PacedBoardClient } from './http.js';
 import { licenseCacheKey, nameStateCacheKey, readBoardCache, writeBoardCache } from './cache.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
@@ -68,9 +68,14 @@ export function txTdlrSearchUrl(opts: {
     const query_string = `license_number=${digits}`;
     return { url: `${SODA}?${query_string}&$limit=10`, query_string };
   }
-  const name = String(opts.businessName || '').trim();
-  const like = name.replace(/'/g, "''").toUpperCase();
-  const where = `upper(business_name) like '%${like}%'`;
+  const name = sodaNameNeedle(opts.businessName || '');
+  const like = name.replace(/'/g, "''");
+  const where =
+    name
+      .split(' ')
+      .filter(Boolean)
+      .map((t) => `upper(business_name) like '%${t.replace(/'/g, "''")}%'`)
+      .join(' AND ') || `upper(business_name) like '%${like}%'`;
   return {
     url: `${SODA}?$where=${encodeURIComponent(where)}&$limit=25`,
     query_string: `$where=${where}`,
@@ -83,11 +88,25 @@ export function parseTxTdlrJson(rows: unknown[], sourceUrl: string, companyName?
     (r): r is Record<string, unknown> => Boolean(r) && typeof r === 'object',
   );
   if (companyName) {
-    list = list.filter((r) => namesMatchNormalized(String(r.business_name || ''), companyName));
-    const best = pickBestNameMatch(companyName, list, (r) => String(r.business_name || ''));
-    if (best) list = [best, ...list.filter((r) => r !== best)];
+    const scored = pickBestNameMatchScored(companyName, list, (r) => String(r.business_name || ''), {
+      allowTrigram: true,
+    });
+    if (scored) {
+      list = [scored.item, ...list.filter((r) => r !== scored.item && namesMatchNormalized(String(r.business_name || ''), companyName))];
+    } else {
+      list = list.filter((r) => namesMatchNormalized(String(r.business_name || ''), companyName));
+      const best = pickBestNameMatch(companyName, list, (r) => String(r.business_name || ''));
+      if (best) list = [best, ...list.filter((r) => r !== best)];
+    }
   }
-  const trade = list.find((r) => isTdlrTradeType(String(r.license_type || ''))) || null;
+  const trade =
+    list.find((r) => isTdlrTradeType(String(r.license_type || ''))) ||
+    (companyName
+      ? list.find((r) => {
+          const owner = String(r.owner_name || '').trim();
+          return Boolean(owner) && !hasCompanyWord(owner);
+        })
+      : null);
   if (!trade) {
     return { people: [], coverage_reason: 'not_found', source: 'tx_tdlr', source_url: sourceUrl };
   }

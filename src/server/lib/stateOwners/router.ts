@@ -3,6 +3,7 @@ import { resolveCslb } from './cslb.js';
 import { resolveWaLni } from './waLni.js';
 import { resolveNycDob } from './nycDob.js';
 import { resolveNyDos } from './nyDos.js';
+import { resolveNyOpenData } from './nyOpenData.js';
 import { resolveMaCsl } from './maCsl.js';
 import { resolveMnDli } from './mnDli.js';
 import { resolvePaDos } from './paDos.js';
@@ -20,16 +21,26 @@ export function leadState(lead: OwnerLead): string {
 }
 
 export async function resolveNewYork(lead: OwnerLead): Promise<ResolverResult> {
-  if (isNycCity(lead.city)) return resolveNycDob(lead);
+  if (isNycCity(lead.city)) {
+    const dob = await resolveNycDob(lead);
+    if (dob.people.length) return dob;
+    const open = await resolveNyOpenData(lead);
+    if (open.people.length) return open;
+    return dob.coverage_reason === 'blocked' ? dob : open.people.length ? open : dob;
+  }
+  const open = await resolveNyOpenData(lead);
+  if (open.people.length) return open;
   return resolveNyDos(lead);
 }
 
 export async function resolveTexas(lead: OwnerLead): Promise<ResolverResult> {
-  if (lead.license_number) {
-    const tdlr = await resolveTxTdlr(lead);
-    if (tdlr.people.length || tdlr.coverage_reason === 'blocked') return tdlr;
-  }
-  return resolveTxSos(lead);
+  const tdlr = await resolveTxTdlr(lead);
+  if (tdlr.people.length) return tdlr;
+  const sos = await resolveTxSos(lead);
+  if (sos.people.length) return sos;
+  if (tdlr.coverage_reason === 'blocked') return tdlr;
+  if (sos.coverage_reason === 'blocked') return sos;
+  return sos.coverage_reason && sos.coverage_reason !== 'not_found' ? sos : tdlr.people.length ? tdlr : sos;
 }
 
 export async function resolveLeadByState(lead: OwnerLead): Promise<ResolverResult> {
