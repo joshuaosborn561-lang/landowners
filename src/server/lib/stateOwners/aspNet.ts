@@ -62,3 +62,19 @@ export function cookiesFromList(setCookie: string[], previous = ''): string {
 export function hasAspNetState(fields: Record<string, string>): boolean {
   return Boolean(fields.__VIEWSTATE);
 }
+
+/** Submit buttons are skipped by collectAspNetFields; ASP.NET search needs one in the POST. */
+export function collectAspNetSearchSubmit(html: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  for (const m of String(html || '').matchAll(/<input\b([^>]*)>/gi)) {
+    const tag = m[1] || '';
+    const type = (tag.match(/\btype="([^"]+)"/i)?.[1] || '').toLowerCase();
+    const name = tag.match(/\bname="([^"]+)"/i)?.[1];
+    if (!name || (type !== 'submit' && type !== 'image')) continue;
+    const value = decodeHtmlAttr(tag.match(/\bvalue="([^"]*)"/i)?.[1] ?? 'Search');
+    if (/search|submit|find|go/i.test(`${name} ${value}`)) {
+      fields[name] = value || 'Search';
+    }
+  }
+  return fields;
+}

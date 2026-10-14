@@ -16,38 +16,69 @@ export function getBoardFetch(): FetchLike {
   return injectedFetch ?? fetch;
 }
 
-export function residentialProxyUrl(): string | null {
-  const password = process.env.APIFY_PROXY_PASSWORD;
-  if (!password) return null;
-  return `http://groups-RESIDENTIAL,country-US,session-permits-mcp:${encodeURIComponent(password)}@proxy.apify.com:8000`;
+const CAPTCHA_RE =
+  /cf-turnstile|challenges\.cloudflare\.com\/turnstile|please complete the captcha/i;
+const IMPERVA_RE = /_Incapsula_Resource|incapsula|imperva/i;
+
+export function apifyResidentialProxyConfigured(): boolean {
+  return Boolean(process.env.APIFY_PROXY_PASSWORD);
 }
 
-export async function createResidentialProxyFetch(): Promise<FetchLike | null> {
-  const proxyUrl = residentialProxyUrl();
+export function hasCaptchaOrTurnstile(body: string): boolean {
+  return CAPTCHA_RE.test(body || '');
+}
+
+/** Session must be [0-9A-Za-z._~], max 50. Pin one residential IP for ASP.NET GET→POST. */
+export function residentialProxyUrl(sessionId = 'permits-mcp'): string | null {
+  const password = process.env.APIFY_PROXY_PASSWORD;
+  if (!password) return null;
+  const session = String(sessionId || 'permits-mcp')
+    .replace(/[^0-9A-Za-z._~]/g, '')
+    .slice(0, 50);
+  const user = `groups-RESIDENTIAL,country-US,session-${session || 'permits-mcp'}`;
+  return `http://${user}:${encodeURIComponent(password)}@proxy.apify.com:8000`;
+}
+
+export async function createResidentialProxyFetch(sessionId?: string): Promise<FetchLike | null> {
+  const proxyUrl = residentialProxyUrl(sessionId);
   if (!proxyUrl) return null;
-  try {
-    const undici = await import('undici');
-    const agent = new undici.ProxyAgent(proxyUrl);
-    return async (input, init) => {
-      const res = await undici.fetch(String(input), {
-        method: init?.method,
-        headers: init?.headers as Record<string, string> | undefined,
-        body: init?.body as string | undefined,
-        dispatcher: agent,
-      });
-      return res as unknown as Response;
-    };
-  } catch {
-    return null;
-  }
+  const undici = await import('undici');
+  const agent = new undici.ProxyAgent(proxyUrl);
+  return async (input, init) => {
+    const res = await undici.fetch(String(input), {
+      method: init?.method,
+      headers: init?.headers as Record<string, string> | undefined,
+      body: init?.body as import('undici').RequestInit['body'],
+      redirect: (init?.redirect ?? 'follow') as RequestRedirect,
+      dispatcher: agent,
+    });
+    return res as unknown as Response;
+  };
 }
 
 /** True when the page is an IP/WAF block, not a captcha/Turnstile challenge. */
 export function isPlainHttpBlock(status: number, body: string): boolean {
-  if (/cf-turnstile|challenges\.cloudflare\.com\/turnstile|please complete the captcha/i.test(body || '')) {
-    return false;
+  if (hasCaptchaOrTurnstile(body)) return false;
+  if (status === 403 || status === 401 || status === 429 || status === 404) return true;
+  if (status === 200 && IMPERVA_RE.test(body || '')) return true;
+  return false;
+}
+
+/** Retry MA SOS / licensing through the residential proxy. Never captcha/Turnstile. */
+export function shouldRetryMaViaProxy(opts: {
+  named: boolean;
+  captcha?: boolean;
+  blocked?: boolean;
+  coverage_reason?: string | null;
+  http_status?: number | null;
+  body?: string;
+}): boolean {
+  if (opts.named) return false;
+  if (opts.captcha || hasCaptchaOrTurnstile(opts.body || '')) return false;
+  if (opts.blocked || opts.coverage_reason === 'blocked' || opts.coverage_reason === 'not_found') {
+    return true;
   }
-  return status === 403 || status === 401 || status === 429 || status === 404;
+  return isPlainHttpBlock(opts.http_status ?? 0, opts.body || '');
 }
 
 export interface BoardGetResult {
