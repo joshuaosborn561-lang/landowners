@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   apifyProxyPasswordEnvName,
+  apifyTokenConfigured,
   formatMaProxyAttemptLog,
   hasCaptchaOrTurnstile,
   isPlainHttpBlock,
@@ -79,5 +80,19 @@ describe('MA residential proxy retry gates', () => {
     else process.env.APIFY_PROXY_PASSWORD = prev;
     if (prevLower === undefined) delete process.env.apify_proxy_password;
     else process.env.apify_proxy_password = prevLower;
+  });
+
+  it('reports Apify token presence without fragments', () => {
+    const prev = process.env.APIFY_TOKEN;
+    const prevApi = process.env.APIFY_API_TOKEN;
+    delete process.env.APIFY_TOKEN;
+    delete process.env.APIFY_API_TOKEN;
+    assert.equal(apifyTokenConfigured(), false);
+    process.env.APIFY_API_TOKEN = 'unit-token-secret';
+    assert.equal(apifyTokenConfigured(), true);
+    if (prev === undefined) delete process.env.APIFY_TOKEN;
+    else process.env.APIFY_TOKEN = prev;
+    if (prevApi === undefined) delete process.env.APIFY_API_TOKEN;
+    else process.env.APIFY_API_TOKEN = prevApi;
   });
 });

@@ -24,6 +24,7 @@ const CAPTCHA_RE =
   /cf-turnstile|challenges\.cloudflare\.com\/turnstile|please complete the captcha/i;
 const IMPERVA_RE = /_Incapsula_Resource|incapsula|imperva|request unsuccessful|incident id/i;
 const PROXY_PASSWORD_ENVS = ['APIFY_PROXY_PASSWORD', 'apify_proxy_password'] as const;
+const TOKEN_ENVS = ['APIFY_TOKEN', 'APIFY_API_TOKEN'] as const;
 const PROXY_GROUP = 'RESIDENTIAL';
 
 export function apifyProxyPasswordEnvName(): string | null {
@@ -40,6 +41,22 @@ export function apifyProxyPassword(): string | null {
 
 export function apifyResidentialProxyConfigured(): boolean {
   return Boolean(apifyProxyPassword());
+}
+
+export function apifyTokenEnvName(): string | null {
+  for (const name of TOKEN_ENVS) {
+    if (process.env[name]?.trim()) return name;
+  }
+  return null;
+}
+
+export function apifyToken(): string | null {
+  const name = apifyTokenEnvName();
+  return name ? process.env[name]!.trim() : null;
+}
+
+export function apifyTokenConfigured(): boolean {
+  return Boolean(apifyToken());
 }
 
 export function hasCaptchaOrTurnstile(body: string): boolean {

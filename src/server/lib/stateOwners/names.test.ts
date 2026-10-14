@@ -29,9 +29,10 @@ import { nycDobSearchUrl } from './nycDob.js';
 import { nyDosSearchUrl } from './nyDos.js';
 import { txTdlrSearchUrl } from './txTdlr.js';
 import { looksBlocked, setBoardFetch } from './http.js';
-import { resolveMaCsl } from './maCsl.js';
+import { resolveMaCsl, resolveMassachusettsOwners } from './maCsl.js';
 import { setBoardCacheReadForTests } from './cache.js';
 import { resolveMaSos } from './maSos.js';
+import { setMaSosBrowserRunnerForTests } from './maSosBrowser.js';
 import { parseNycDobJson } from './nycDob.js';
 import { parseWaLniJson, parseWaLniText } from './waLni.js';
 import { parseTxTdlrJson, parseTxTdlrText } from './txTdlr.js';
@@ -562,6 +563,41 @@ describe('MA license miss routes to SOS', () => {
       else process.env.APIFY_PROXY_PASSWORD = prev;
       if (prevLower === undefined) delete process.env.apify_proxy_password;
       else process.env.apify_proxy_password = prevLower;
+    }
+  });
+
+  it('batches Incapsula SOS misses through one Playwright actor run', async () => {
+    setBoardCacheReadForTests(async () => null);
+    setBoardFetch(async (input) => {
+      if (String(input).includes('corp.sec.state.ma.us')) {
+        return new Response('Request unsuccessful. Incapsula incident ID /_Incapsula_Resource', { status: 200 });
+      }
+      return new Response('Access Denied', { status: 403 });
+    });
+    let actorCalls = 0;
+    setMaSosBrowserRunnerForTests(async ({ lookups }) => {
+      actorCalls += 1;
+      return lookups.map((lookup) => ({
+        kind: 'detail',
+        cacheKey: lookup.cacheKey,
+        html: `Entity Name: ${lookup.companyName}\nPresident: PAT KIM\n`,
+        url: 'https://corp.sec.state.ma.us/corpweb/CorpSearch/CorpSummary.aspx',
+        httpStatus: 200,
+      }));
+    });
+    try {
+      const out = await resolveMassachusettsOwners([
+        { list_id: 'x', lead_id: 11, company_name: 'Acme Builders LLC', state: 'MA' },
+        { list_id: 'x', lead_id: 12, company_name: 'Beta Builders LLC', state: 'MA' },
+      ]);
+      assert.equal(actorCalls, 1);
+      assert.equal(out.length, 2);
+      assert.equal(out[0]?.people[0]?.last_name, 'KIM');
+      assert.equal(out[1]?.people[0]?.last_name, 'KIM');
+    } finally {
+      setBoardFetch(null);
+      setBoardCacheReadForTests(null);
+      setMaSosBrowserRunnerForTests(null);
     }
   });
 });

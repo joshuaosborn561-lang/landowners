@@ -3,6 +3,7 @@ import {
   DESKTOP_UA,
   createResidentialProxyFetch,
   hasCaptchaOrTurnstile,
+  hostOf,
   isBoardFetchInjected,
   looksBlocked,
   shouldRetryMaViaProxy,
@@ -19,10 +20,19 @@ import {
   writeBoardCache,
 } from './cache.js';
 import { resolveMaSos } from './maSos.js';
+import {
+  fetchMaSosViaPlaywright,
+  maSosLookupFromLead,
+  shouldUseMaBrowser,
+} from './maSosBrowser.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
 
-const ACCELA = 'https://elicensing21.mass.gov/CitizenAccess/GeneralProperty/PropertyLookUp.aspx?isLicensee=Y';
-const OPSI = 'https://madpl.mylicense.com/Verification/';
+/** Accela Citizen Access no longer lists DOL construction boards (eLIPSE). Kept only as a last-resort host label. */
+export const ACCELA = 'https://elicensing21.mass.gov/CitizenAccess/GeneralProperty/PropertyLookUp.aspx?isLicensee=Y';
+/** Official free OPSI / CSL verification (person search). */
+export const OPSI = 'https://madpl.mylicense.com/Verification/';
+/** Official free OPSI facility / business-name search. */
+export const OPSI_FACILITY = 'https://madpl.mylicense.com/Verification/Search.aspx?Facility=Y';
 
 const CHROME_NAME = /MASSACHUSETTS|COMMONWEALTH|LICENSE|SEARCH|PLEASE|DEPARTMENT|ACCELA|VERIFICATION/i;
 
@@ -65,7 +75,8 @@ export function parseMaCslText(text: string, sourceUrl: string): ResolverResult 
     body.match(/Licensee(?:\s+Name)?[:\s]+([A-Z][A-Za-z .'-]{2,60})/i) ||
     body.match(/License Holder[:\s]+([A-Z][A-Za-z .'-]{2,60})/i) ||
     body.match(/Name of Licensee[:\s]+([A-Z][A-Za-z .'-]{2,60})/i) ||
-    body.match(/Full Name[:\s]+([A-Z][A-Za-z .'-]{2,60})/i);
+    body.match(/Full Name[:\s]+([A-Z][A-Za-z .'-]{2,60})/i) ||
+    body.match(/Owner(?:\s+Name)?[:\s]+([A-Z][A-Za-z .'-]{2,60})/i);
   let raw = holder?.[1]?.trim() || '';
   if (!raw) {
     const last = body.match(/Last Name[:\s]+([A-Z][A-Za-z .'-]{1,40})/i)?.[1];
@@ -94,89 +105,78 @@ function headers(cookie: string, referer: string, extra: Record<string, string> 
   };
 }
 
-async function accelaSearch(
+export function applyOpsiPersonFields(
+  fields: Record<string, string>,
   query: { license?: string; businessName?: string },
-  client: PacedBoardClient,
-): Promise<{ status: number; body: string; url: string; blocked: boolean; query_string: string }> {
-  const query_string = query.license
-    ? `license=${query.license}`
-    : `businessName=${query.businessName || ''}`;
-  const got = await client.get(ACCELA);
-  if (looksBlocked(got.status, got.body)) {
-    return { status: got.status, body: got.body, url: ACCELA, blocked: true, query_string };
-  }
-  const fields = collectAspNetFields(got.body);
-  if (!hasAspNetState(fields)) {
-    return { status: got.status, body: got.body, url: ACCELA, blocked: false, query_string };
-  }
-  if (query.license) {
-    fields['ctl00$PlaceHolderMain$refLicenseeSearchForm$txtLicenseNumber'] = query.license;
-  }
+): Record<string, string> {
+  const next = { ...fields };
+  next.t_web_lookup__profession_name = next.t_web_lookup__profession_name || 'Building Licenses';
+  next.t_web_lookup__license_type_name = next.t_web_lookup__license_type_name || 'Construction Supervisor';
+  if (query.license) next.t_web_lookup__license_no = query.license;
+  if (query.businessName) next.t_web_lookup__doing_business_as = query.businessName;
+  next.sch_button = 'Search';
+  return next;
+}
+
+export function applyOpsiFacilityFields(
+  fields: Record<string, string>,
+  query: { license?: string; businessName?: string },
+): Record<string, string> {
+  const next = { ...fields };
+  next.t_web_lookup__profession_name = next.t_web_lookup__profession_name || 'Building Licenses';
+  if (query.license) next.t_web_lookup__license_no = query.license;
   if (query.businessName) {
-    for (const [k] of Object.entries(fields)) {
-      if (/txtBusiName|txtBusinessName|txtLicenseeName|txtGSName/i.test(k)) {
-        fields[k] = query.businessName;
-      }
-    }
+    next.t_web_lookup__full_name = query.businessName;
+    next.t_web_lookup__owner_name = query.businessName;
   }
-  fields.__EVENTTARGET = 'ctl00$PlaceHolderMain$btnNewSearch';
-  fields.__EVENTARGUMENT = '';
-  const cookie = cookiesFromList(got.setCookie);
-  const posted = await client.post(ACCELA, {
-    headers: headers(cookie, ACCELA, {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Origin: 'https://elicensing21.mass.gov',
-    }),
-    body: new URLSearchParams(fields),
-  });
-  return {
-    status: posted.status,
-    body: posted.body,
-    url: posted.url || ACCELA,
-    blocked: looksBlocked(posted.status, posted.body),
-    query_string,
-  };
+  next.sch_button = 'Search';
+  return next;
+}
+
+function logCslAttempt(url: string, status: number, form: 'person' | 'facility'): void {
+  console.log(`[ma-csl] host=${hostOf(url)} form=${form} status=${status}`);
 }
 
 async function opsiSearch(
   query: { license?: string; businessName?: string },
   client: PacedBoardClient,
+  form: 'person' | 'facility',
 ): Promise<{ status: number; body: string; url: string; blocked: boolean; query_string: string }> {
+  const startUrl = form === 'facility' ? OPSI_FACILITY : OPSI;
   const query_string = query.license
     ? `license=${query.license}`
-    : `licensee_name=${query.businessName || ''}`;
-  const got = await client.get(OPSI);
+    : form === 'facility'
+      ? `facility_name=${query.businessName || ''}`
+      : `doing_business_as=${query.businessName || ''}`;
+  const got = await client.get(startUrl);
+  logCslAttempt(startUrl, got.status, form);
   if (looksBlocked(got.status, got.body)) {
-    return { status: got.status, body: got.body, url: OPSI, blocked: true, query_string };
+    return { status: got.status, body: got.body, url: startUrl, blocked: true, query_string };
   }
   const fields = collectAspNetFields(got.body);
   if (!hasAspNetState(fields)) {
-    return { status: got.status, body: got.body, url: OPSI, blocked: false, query_string };
+    return { status: got.status, body: got.body, url: startUrl, blocked: false, query_string };
   }
-  if (query.license) fields.t_web_lookup__license_no = query.license;
-  if (query.businessName) {
-    fields.t_web_lookup__licensee_name = query.businessName;
-    fields.t_web_lookup__facility_name = query.businessName;
-  }
-  fields.sch_button = 'Search';
+  const postedFields = form === 'facility' ? applyOpsiFacilityFields(fields, query) : applyOpsiPersonFields(fields, query);
   const cookie = cookiesFromList(got.setCookie);
-  const posted = await client.post(OPSI, {
-    headers: headers(cookie, OPSI, {
+  const posted = await client.post(startUrl, {
+    headers: headers(cookie, startUrl, {
       'Content-Type': 'application/x-www-form-urlencoded',
       Origin: 'https://madpl.mylicense.com',
     }),
-    body: new URLSearchParams(fields),
+    body: new URLSearchParams(postedFields),
   });
+  logCslAttempt(posted.url || startUrl, posted.status, form);
   if (looksBlocked(posted.status, posted.body)) {
-    return { status: posted.status, body: posted.body, url: OPSI, blocked: true, query_string };
+    return { status: posted.status, body: posted.body, url: startUrl, blocked: true, query_string };
   }
   const detailHref = posted.body.match(/Details\.aspx\?result=([a-f0-9-]+)/i);
   if (!detailHref?.[1]) {
-    return { status: posted.status, body: posted.body, url: posted.url || OPSI, blocked: false, query_string };
+    return { status: posted.status, body: posted.body, url: posted.url || startUrl, blocked: false, query_string };
   }
   const detailUrl = `https://madpl.mylicense.com/Verification/Details.aspx?result=${detailHref[1]}`;
   const nextCookie = cookiesFromList(posted.setCookie, cookie);
-  const detail = await client.get(detailUrl, { headers: headers(nextCookie, OPSI) });
+  const detail = await client.get(detailUrl, { headers: headers(nextCookie, startUrl) });
   const combined = `${posted.body}\n${detail.body}`;
   return {
     status: detail.status || posted.status,
@@ -202,54 +202,54 @@ async function lookupMaLicense(
     return { ...parseMaCslText(cached.body || '', ACCELA), cached: true, http_status: cached.http_status };
   }
 
-  const accela = await accelaSearch(query, client);
-  if (!accela.blocked) {
-    const parsed = parseMaCslText(htmlToText(accela.body), accela.url);
-    if (parsed.people.length) {
+  // Accela elicensing21 no longer lists construction / CSL (eLIPSE). Contractor Hub is captcha-gated — skip.
+  const person = await opsiSearch(query, client, 'person');
+  let chosen = person;
+  if (!person.blocked) {
+    const parsedPerson = parseMaCslText(htmlToText(person.body), person.url);
+    if (parsedPerson.people.length) {
       await writeBoardCache({
         board: 'ma_csl',
         cache_key: cacheKey,
-        http_status: accela.status,
-        body: htmlToText(accela.body),
-        query_string: accela.query_string,
-        fetched_url: accela.url,
+        http_status: person.status,
+        body: htmlToText(person.body),
+        query_string: person.query_string,
+        fetched_url: person.url,
       });
-      return { ...parsed, http_status: accela.status };
+      return { ...parsedPerson, http_status: person.status };
     }
   }
-
-  const opsi = await opsiSearch(
-    query,
-    new PacedBoardClient({
-      source: 'ma_csl',
-      fetch: client.fetchFn,
-      viaProxy: client.viaProxy,
-    }),
-  );
-  const parsed = opsi.blocked
-    ? { people: [] as ResolverResult['people'], coverage_reason: 'blocked' as const, source: 'ma_csl' as const, source_url: opsi.url }
-    : parseMaCslText(htmlToText(opsi.body), opsi.url);
+  if (query.businessName || !person.blocked) {
+    chosen = await opsiSearch(
+      query,
+      new PacedBoardClient({ source: 'ma_csl', fetch: client.fetchFn, viaProxy: client.viaProxy }),
+      'facility',
+    );
+  }
+  const parsed = chosen.blocked
+    ? { people: [] as ResolverResult['people'], coverage_reason: 'blocked' as const, source: 'ma_csl' as const, source_url: chosen.url }
+    : parseMaCslText(htmlToText(chosen.body), chosen.url);
   await writeBoardCache({
     board: 'ma_csl',
     cache_key: cacheKey,
-    http_status: opsi.status,
-    body: htmlToText(opsi.body),
-    query_string: opsi.query_string,
-    fetched_url: opsi.url,
+    http_status: chosen.status,
+    body: htmlToText(chosen.body),
+    query_string: chosen.query_string,
+    fetched_url: chosen.url,
   });
-  if (parsed.people.length) return { ...parsed, http_status: opsi.status };
-  if (accela.blocked && opsi.blocked) {
+  if (parsed.people.length) return { ...parsed, http_status: chosen.status };
+  if (person.blocked && chosen.blocked) {
     return {
       people: [],
       coverage_reason: 'blocked',
       source: 'ma_csl',
-      source_url: opsi.url,
+      source_url: chosen.url,
       blocked: true,
-      captcha: hasCaptchaOrTurnstile(accela.body) || hasCaptchaOrTurnstile(opsi.body),
-      http_status: opsi.status,
+      captcha: hasCaptchaOrTurnstile(person.body) || hasCaptchaOrTurnstile(chosen.body),
+      http_status: chosen.status,
     };
   }
-  return { ...parsed, coverage_reason: parsed.coverage_reason || 'not_found', http_status: opsi.status };
+  return { ...parsed, coverage_reason: parsed.coverage_reason || 'not_found', http_status: chosen.status };
 }
 
 async function resolveMaCslOnce(
@@ -293,6 +293,7 @@ async function resolveMaCslOnce(
 export async function resolveMaCsl(
   lead: OwnerLead,
   client: PacedBoardClient = new PacedBoardClient({ source: 'ma_csl' }),
+  opts: { skipBrowser?: boolean } = {},
 ): Promise<ResolverResult> {
   let proxyUpFront = null;
   try {
@@ -308,31 +309,60 @@ export async function resolveMaCsl(
     fetch: proxyUpFront || undefined,
     viaProxy: Boolean(proxyUpFront),
   });
-  const first = await resolveMaCslOnce(lead, client, sosClient);
-  if (first.people.length) return first;
-  // Injected tests own the transport. Never attach a live Apify agent over them.
-  if (client.fetchFn || proxyUpFront || isBoardFetchInjected()) return first;
+  let current = await resolveMaCslOnce(lead, client, sosClient);
+  if (current.people.length) return current;
+  if (isBoardFetchInjected()) return current;
   if (
-    !shouldRetryMaViaProxy({
+    !client.fetchFn &&
+    !proxyUpFront &&
+    shouldRetryMaViaProxy({
       named: false,
-      captcha: first.captcha,
-      blocked: first.blocked,
-      coverage_reason: first.coverage_reason,
-      http_status: first.http_status,
+      captcha: current.captcha,
+      blocked: current.blocked,
+      coverage_reason: current.coverage_reason,
+      http_status: current.http_status,
     })
   ) {
-    return first;
+    let proxyFetch = null;
+    try {
+      proxyFetch = await createResidentialProxyFetch(`ma${lead.lead_id || 'retry'}`);
+    } catch {
+      proxyFetch = null;
+    }
+    if (proxyFetch) {
+      current = await resolveMaCslOnce(
+        lead,
+        new PacedBoardClient({ source: 'ma_csl', fetch: proxyFetch, viaProxy: true }),
+        new PacedBoardClient({ source: 'ma_sos', fetch: proxyFetch, viaProxy: true }),
+      );
+      if (current.people.length) return current;
+    }
   }
-  let proxyFetch = null;
-  try {
-    proxyFetch = await createResidentialProxyFetch(`ma${lead.lead_id || 'retry'}`);
-  } catch {
-    proxyFetch = null;
+  if (opts.skipBrowser || !shouldUseMaBrowser(current)) return current;
+  const lookup = maSosLookupFromLead(lead);
+  if (!lookup) return current;
+  const [browser] = await fetchMaSosViaPlaywright([lookup]);
+  return browser || current;
+}
+
+/** One Playwright actor run for every remaining Incapsula SOS miss. */
+export async function resolveMassachusettsOwners(leads: OwnerLead[]): Promise<ResolverResult[]> {
+  const first: ResolverResult[] = [];
+  for (const lead of leads) {
+    first.push(await resolveMaCsl(lead, new PacedBoardClient({ source: 'ma_csl' }), { skipBrowser: true }));
   }
-  if (!proxyFetch) return first;
-  return resolveMaCslOnce(
-    lead,
-    new PacedBoardClient({ source: 'ma_csl', fetch: proxyFetch, viaProxy: true }),
-    new PacedBoardClient({ source: 'ma_sos', fetch: proxyFetch, viaProxy: true }),
-  );
+  const pending = leads
+    .map((lead, i) => ({ lead, index: i, result: first[i]! }))
+    .filter((row) => shouldUseMaBrowser(row.result));
+  const lookups = pending
+    .map((row) => maSosLookupFromLead(row.lead))
+    .filter((row): row is NonNullable<typeof row> => Boolean(row));
+  if (!lookups.length) return first;
+  const browser = await fetchMaSosViaPlaywright(lookups);
+  const out = first.slice();
+  pending.forEach((row, i) => {
+    const hit = browser[i];
+    if (hit) out[row.index] = hit;
+  });
+  return out;
 }

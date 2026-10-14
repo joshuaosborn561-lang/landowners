@@ -10,10 +10,11 @@ describe('formatStartupKeyFlags', () => {
       cpa: true,
       fl: false,
       apify_residential_proxy: true,
+      apify_token: false,
     });
     assert.equal(
       line,
-      'Keys: permitstack=true veriphone=false cpa=true fl=false apify_residential_proxy=true',
+      'Keys: permitstack=true veriphone=false cpa=true fl=false apify_residential_proxy=true apify_token=false',
     );
     assert.equal(/[A-Za-z0-9]{4}…[A-Za-z0-9]{4}/.test(line), false);
     assert.equal(line.includes('pk_'), false);
