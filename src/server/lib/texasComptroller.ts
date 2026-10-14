@@ -291,7 +291,35 @@ function scoreFranchiseHit(target: string, hitName: string, personStyle: boolean
   if (key.includes(target) || target.includes(key)) return 80;
   if (normHit.includes(normTarget) || normTarget.includes(normHit)) return 70;
   const words = target.split(' ').filter((w) => w.length > 2);
-  return words.filter((w) => key.includes(w)).length * 10;
+  const overlap = words.filter((w) => key.includes(w)).length * 10;
+  if (overlap >= 20) return overlap;
+  const tri = trigramScore(target, key);
+  if (tri >= 55) return tri;
+  return overlap;
+}
+
+function trigramScore(a: string, b: string): number {
+  if (!a || !b) return 0;
+  if (a === b) return 100;
+  const grams = (s: string): string[] => {
+    const padded = `  ${s} `;
+    const out: string[] = [];
+    for (let i = 0; i <= padded.length - 3; i += 1) out.push(padded.slice(i, i + 3));
+    return out;
+  };
+  const ga = grams(a);
+  const gb = grams(b);
+  const counts = new Map<string, number>();
+  for (const g of ga) counts.set(g, (counts.get(g) || 0) + 1);
+  let inter = 0;
+  for (const g of gb) {
+    const n = counts.get(g) || 0;
+    if (n > 0) {
+      inter += 1;
+      counts.set(g, n - 1);
+    }
+  }
+  return Math.round(((2 * inter) / (ga.length + gb.length)) * 100);
 }
 
 export type RankedFranchiseHit = { taxpayerId: string; name: string; score: number };

@@ -119,22 +119,116 @@ export function pickBestNameMatch<T>(
   items: T[],
   nameOf: (item: T) => string,
 ): T | null {
+  return pickBestNameMatchScored(target, items, nameOf, { allowTrigram: false })?.item ?? null;
+}
+
+export function trigramSimilarity(a: string, b: string): number {
+  const left = normalizeCompanyName(a);
+  const right = normalizeCompanyName(b);
+  if (!left || !right) return 0;
+  if (left === right) return 1;
+  const grams = (s: string): string[] => {
+    const padded = `  ${s} `;
+    const out: string[] = [];
+    for (let i = 0; i <= padded.length - 3; i += 1) out.push(padded.slice(i, i + 3));
+    return out;
+  };
+  const ga = grams(left);
+  const gb = grams(right);
+  const counts = new Map<string, number>();
+  for (const g of ga) counts.set(g, (counts.get(g) || 0) + 1);
+  let inter = 0;
+  for (const g of gb) {
+    const n = counts.get(g) || 0;
+    if (n > 0) {
+      inter += 1;
+      counts.set(g, n - 1);
+    }
+  }
+  return (2 * inter) / (ga.length + gb.length);
+}
+
+export const TRIGRAM_THRESHOLD = 0.48;
+
+export interface NameMatchHit<T> {
+  item: T;
+  score: number;
+  method: 'exact' | 'substring' | 'trigram';
+}
+
+export function pickBestNameMatchScored<T>(
+  target: string,
+  items: T[],
+  nameOf: (item: T) => string,
+  opts?: {
+    city?: string | null;
+    zip?: string | null;
+    cityOf?: (item: T) => string | null | undefined;
+    zipOf?: (item: T) => string | null | undefined;
+    minTrigram?: number;
+    allowTrigram?: boolean;
+  },
+): NameMatchHit<T> | null {
   const key = normalizeCompanyName(target);
   if (!key) return null;
-  let best: T | null = null;
-  let bestScore = 0;
+  const minTrigram = opts?.minTrigram ?? TRIGRAM_THRESHOLD;
+  let best: NameMatchHit<T> | null = null;
+  let second = 0;
   for (const item of items) {
     const hit = normalizeCompanyName(nameOf(item));
     if (!hit) continue;
     let score = 0;
-    if (hit === key) score = 100;
-    else if (hit.includes(key) || key.includes(hit)) score = 80;
-    if (score > bestScore) {
-      bestScore = score;
-      best = item;
+    let method: NameMatchHit<T>['method'] = 'trigram';
+    if (hit === key) {
+      score = 100;
+      method = 'exact';
+    } else if (hit.includes(key) || key.includes(hit)) {
+      score = 80;
+      method = 'substring';
+    } else if (opts?.allowTrigram !== false) {
+      const tri = trigramSimilarity(key, hit);
+      if (tri >= minTrigram) {
+        score = Math.round(tri * 100);
+        method = 'trigram';
+        const city = String(opts?.city || '').trim().toLowerCase();
+        const zip = String(opts?.zip || '').replace(/\D/g, '').slice(0, 5);
+        const itemCity = String(opts?.cityOf?.(item) || '').trim().toLowerCase();
+        const itemZip = String(opts?.zipOf?.(item) || '').replace(/\D/g, '').slice(0, 5);
+        if (city && itemCity && city === itemCity) score += 8;
+        if (zip && itemZip && zip === itemZip) score += 5;
+      }
+    }
+    if (score > (best?.score || 0)) {
+      second = best?.score || 0;
+      best = { item, score, method };
+    } else if (score > second) {
+      second = score;
     }
   }
-  return bestScore >= 70 ? best : null;
+  if (!best) return null;
+  if (best.method === 'trigram' && best.score < Math.round(minTrigram * 100)) return null;
+  if (best.method === 'trigram' && second > 0 && best.score - second < 5) return null;
+  if (best.method !== 'trigram' && best.score < 70) return null;
+  return best;
+}
+
+const REGISTRY_AGENT =
+  /\b(corporation service|ct corporation|c t corporation|cogency|legalzoom|registered agents?|national registered|united agent|northwest registered|incorp services|northwest registered agent)\b/i;
+
+export function isRegistryAgentName(name: string): boolean {
+  return REGISTRY_AGENT.test(name || '');
+}
+
+export function sodaNameNeedle(name: string): string {
+  const tokens = normalizeCompanyName(name)
+    .split(' ')
+    .filter((t) => t.length >= 3)
+    .slice(0, 4);
+  return tokens.join(' ') || normalizeCompanyName(name).slice(0, 24);
+}
+
+export function hasUsableBusinessName(name: string | null | undefined): boolean {
+  return normalizeCompanyName(name || '').length >= 3;
 }
 
 export function htmlToText(html: string): string {

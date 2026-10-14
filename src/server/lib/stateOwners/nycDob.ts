@@ -1,4 +1,4 @@
-import { namesMatchNormalized, pickBestNameMatch, splitPersonName } from './names.js';
+import { namesMatchNormalized, pickBestNameMatch, pickBestNameMatchScored, sodaNameNeedle, splitPersonName } from './names.js';
 import { looksBlocked, PacedBoardClient } from './http.js';
 import { licenseCacheKey, nameStateCacheKey, readBoardCache, writeBoardCache } from './cache.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
@@ -14,9 +14,13 @@ export function nycDobSearchUrl(opts: {
     const query_string = `license_number=${license}`;
     return { url: `${SOCRATA}?${query_string}`, query_string };
   }
-  const name = String(opts.businessName || '').trim();
-  const like = name.replace(/'/g, "''").toUpperCase();
-  const where = `upper(business_name) like '%${like}%'`;
+  const name = sodaNameNeedle(opts.businessName || '');
+  const like = name.replace(/'/g, "''");
+  const where = name
+    .split(' ')
+    .filter(Boolean)
+    .map((t) => `upper(business_name) like '%${t.replace(/'/g, "''")}%'`)
+    .join(' AND ') || `upper(business_name) like '%${like}%'`;
   return {
     url: `${SOCRATA}?$where=${encodeURIComponent(where)}&$limit=25`,
     query_string: `$where=${where}`,
@@ -31,8 +35,11 @@ export function parseNycDobJson(
   const list = Array.isArray(rows) ? rows : [];
   let recs = list.filter((r): r is Record<string, unknown> => Boolean(r) && typeof r === 'object');
   if (companyName) {
-    const matched = pickBestNameMatch(companyName, recs, (r) => String(r.business_name || ''));
-    recs = matched ? recs.filter((r) => namesMatchNormalized(String(r.business_name || ''), companyName)) : [];
+    const scored = pickBestNameMatchScored(companyName, recs, (r) => String(r.business_name || ''), {
+      allowTrigram: true,
+    });
+    const matched = scored?.item ?? pickBestNameMatch(companyName, recs, (r) => String(r.business_name || ''));
+    recs = matched ? recs.filter((r) => namesMatchNormalized(String(r.business_name || ''), companyName) || r === matched) : [];
   }
   if (!recs.length) {
     return { people: [], coverage_reason: 'not_found', source: 'nyc_dob', source_url: sourceUrl };

@@ -3,6 +3,7 @@ import {
   normalizeCompanyName,
   parseBoardPersonName,
   pickBestNameMatch,
+  pickBestNameMatchScored,
   splitPersonName,
 } from './names.js';
 import { looksBlocked, PacedBoardClient } from './http.js';
@@ -11,6 +12,9 @@ import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
 
 const LOOKUP = 'https://www.dli.mn.gov/license-and-registration-lookup';
 const RESIDENTIAL = 'https://secure.doli.state.mn.us/ccld/data/MNDLILicRegCertExport_Residential_Contractors.csv';
+const ELECTRICAL = 'https://secure.doli.state.mn.us/ccld/data/MNDLILicRegCertExport_Electrical.csv';
+const PLUMBING = 'https://secure.doli.state.mn.us/ccld/data/MNDLILicRegCertExport_Plumbing.csv';
+const MN_CSVS = [RESIDENTIAL, ELECTRICAL, PLUMBING];
 
 export function parseCsvLine(line: string): string[] {
   const out: string[] = [];
@@ -73,13 +77,17 @@ export function parseMnDliCsv(text: string, companyName: string, sourceUrl: stri
   }
 
   const businesses = rows.filter((r) => !isPerson(r));
-  const exact = businesses.filter((r) => {
-    const name = r.Name || '';
-    const dba = r.DBA_Name || '';
-    return Boolean(pickBestNameMatch(target, [name, dba], (n) => n));
-  });
-  const biz = exact.find(isIssued) || exact[0] || null;
-  if (exact.length && !exact.some(isIssued)) {
+  const scored = pickBestNameMatchScored(
+    target,
+    businesses,
+    (r) => `${r.Name || ''} ${r.DBA_Name || ''}`,
+    { allowTrigram: true },
+  );
+  const exact = scored
+    ? businesses.filter((r) => r === scored.item || pickBestNameMatch(target, [r.Name || '', r.DBA_Name || ''], (n) => n))
+    : businesses.filter((r) => Boolean(pickBestNameMatch(target, [r.Name || '', r.DBA_Name || ''], (n) => n)));
+  const biz = exact.find(isIssued) || exact[0] || scored?.item || null;
+  if (exact.length && !exact.some(isIssued) && !isIssued(biz || {})) {
     return { people: [], coverage_reason: 'inactive_license', source: 'mn_dli', source_url: sourceUrl };
   }
 
@@ -90,6 +98,12 @@ export function parseMnDliCsv(text: string, companyName: string, sourceUrl: stri
     if (key && key !== '|') {
       const atAddr = peopleRows.filter((r) => addrKey(r) === key);
       if (atAddr.length === 1) qualifier = atAddr[0]!;
+      else if (atAddr.length > 1) qualifier = atAddr[0]!;
+    }
+    if (!qualifier) {
+      const city = normalizeCompanyName(biz.City || '');
+      const sameCity = peopleRows.filter((r) => normalizeCompanyName(r.City || '') === city && city);
+      if (sameCity.length === 1) qualifier = sameCity[0]!;
     }
   }
 
@@ -128,6 +142,16 @@ export function parseMnDliCsv(text: string, companyName: string, sourceUrl: stri
 
   if (biz && looksLikeSolePropPerson(companyName)) {
     return { people: [], coverage_reason: 'sole_prop_dba', source: 'mn_dli', source_url: sourceUrl };
+  }
+  if (biz) {
+    return {
+      people: [],
+      coverage_reason: 'name_miss',
+      source: 'mn_dli',
+      source_url: sourceUrl,
+      match_method: scored?.method,
+      match_score: scored?.score,
+    };
   }
   return { people: [], coverage_reason: 'not_found', source: 'mn_dli', source_url: sourceUrl };
 }
@@ -197,24 +221,29 @@ export async function resolveMnDli(
   let csvText = csvMemo && Date.now() - csvMemo.fetchedAt < 6 * 60 * 60 * 1000 ? csvMemo.text : null;
   let status = 200;
   if (!csvText) {
-    const got = await client.get(RESIDENTIAL, { headers: { Accept: '*/*' } });
-    status = got.status;
-    if (looksBlocked(got.status, got.body)) {
-      await writeBoardCache({ board: 'mn_dli', cache_key: key, http_status: got.status, body: got.body });
-      return {
-        people: [],
-        coverage_reason: 'blocked',
-        source: 'mn_dli',
-        source_url: RESIDENTIAL,
-        blocked: true,
-        http_status: got.status,
-      };
+    const chunks: string[] = [];
+    for (const url of MN_CSVS) {
+      const got = await client.get(url, { headers: { Accept: '*/*' } });
+      status = got.status;
+      if (looksBlocked(got.status, got.body)) {
+        await writeBoardCache({ board: 'mn_dli', cache_key: key, http_status: got.status, body: got.body });
+        return {
+          people: [],
+          coverage_reason: 'blocked',
+          source: 'mn_dli',
+          source_url: url,
+          blocked: true,
+          http_status: got.status,
+        };
+      }
+      if (got.status !== 200) continue;
+      chunks.push(chunks.length ? got.body.replace(/^[^\n]+\n/, '') : got.body);
     }
-    if (got.status !== 200) {
-      await writeBoardCache({ board: 'mn_dli', cache_key: key, http_status: got.status, body: got.body });
-      return { people: [], coverage_reason: 'not_found', source: 'mn_dli', source_url: RESIDENTIAL, http_status: got.status };
+    if (!chunks.length) {
+      await writeBoardCache({ board: 'mn_dli', cache_key: key, http_status: status, body: '' });
+      return { people: [], coverage_reason: 'not_found', source: 'mn_dli', source_url: RESIDENTIAL, http_status: status };
     }
-    csvText = got.body;
+    csvText = chunks.join('\n');
     csvMemo = { fetchedAt: Date.now(), text: csvText };
   }
 

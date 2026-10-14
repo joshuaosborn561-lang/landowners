@@ -1,6 +1,7 @@
 import { htmlToText, labeledValue, parseBoardPersonName, pickBestNameMatch, splitPersonName } from './names.js';
 import { looksBlocked, PacedBoardClient } from './http.js';
 import { nameStateCacheKey, readBoardCache, writeBoardCache } from './cache.js';
+import { resolvePaOpenData } from './paOpenData.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
 
 export const PA_DOS_SEARCH = 'https://file.dos.pa.gov/search/business';
@@ -71,6 +72,8 @@ export async function resolvePaDos(
   if (!name) {
     return { people: [], coverage_reason: 'not_found', source: 'pa_dos', source_url: PA_DOS_SEARCH };
   }
+  const open = await resolvePaOpenData(lead);
+  if (open.people.length || open.http_status === 200) return open;
   const { url, query_string } = paDosSearchUrl(name);
   const key = nameStateCacheKey(name, 'PA');
   const cached = await readBoardCache('pa_dos', key);

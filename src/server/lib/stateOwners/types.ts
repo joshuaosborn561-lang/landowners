@@ -14,10 +14,13 @@ export type OwnerRole = (typeof OWNER_ROLES)[number];
 export const COVERAGE_REASONS = [
   'not_found',
   'inactive_license',
+  'inactive',
   'no_license_number',
   'sole_prop_dba',
   'blocked',
   'parse_error',
+  'name_miss',
+  'no_source',
 ] as const;
 
 export type CoverageReason = (typeof COVERAGE_REASONS)[number];
@@ -79,6 +82,9 @@ export interface ResolverResult {
   cached?: boolean;
   http_status?: number | null;
   blocked?: boolean;
+  /** How the company name was matched. Used for precision reports, not chat. */
+  match_method?: 'exact' | 'substring' | 'trigram' | 'license';
+  match_score?: number;
 }
 
 export class BoardJobStopError extends Error {

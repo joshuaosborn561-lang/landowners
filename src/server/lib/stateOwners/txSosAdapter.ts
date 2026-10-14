@@ -11,10 +11,23 @@ export async function resolveTxSos(lead: OwnerLead): Promise<ResolverResult> {
   if (!lead.company_name?.trim()) {
     return { people: [], coverage_reason: 'not_found', source: 'tx_sos' };
   }
-  const hits = await searchFranchiseEntities(lead.company_name);
+  let hits: Array<{ taxpayerId: string; name: string }>;
+  try {
+    hits = await searchFranchiseEntities(lead.company_name);
+  } catch {
+    return { people: [], coverage_reason: 'blocked', source: 'tx_sos', blocked: true };
+  }
   const ranked = rankFranchiseHits(lead.company_name, hits);
+  if (!ranked.length && hits.length) {
+    return { people: [], coverage_reason: 'name_miss', source: 'tx_sos' };
+  }
   for (const cand of ranked) {
-    const entity = await getFranchiseAccount(cand.taxpayerId);
+    let entity;
+    try {
+      entity = await getFranchiseAccount(cand.taxpayerId);
+    } catch {
+      continue;
+    }
     if (!entity) continue;
     const picked = pickOwnerOfficer(lead.contact_name || '', entity, lead.company_name);
     if (!picked.officer?.name) continue;
@@ -35,7 +48,9 @@ export async function resolveTxSos(lead: OwnerLead): Promise<ResolverResult> {
       coverage_reason: null,
       source: 'tx_sos',
       source_url: person.source_url,
+      match_method: cand.score >= 100 ? 'exact' : cand.score >= 70 ? 'substring' : 'trigram',
+      match_score: cand.score,
     };
   }
-  return { people: [], coverage_reason: 'not_found', source: 'tx_sos' };
+  return { people: [], coverage_reason: hits.length ? 'name_miss' : 'not_found', source: 'tx_sos' };
 }
