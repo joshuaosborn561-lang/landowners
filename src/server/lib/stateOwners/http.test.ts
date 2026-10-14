@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  apifyProxyPasswordEnvName,
+  formatMaProxyAttemptLog,
   hasCaptchaOrTurnstile,
   isPlainHttpBlock,
   looksBlocked,
@@ -17,6 +19,15 @@ describe('MA residential proxy retry gates', () => {
     assert.equal(
       shouldRetryMaViaProxy({ named: false, blocked: true, http_status: 200, body }),
       true,
+    );
+    assert.equal(looksBlocked(200, 'Request unsuccessful. Incident ID 0-123'), true);
+    assert.equal(
+      formatMaProxyAttemptLog({
+        url: 'https://corp.sec.state.ma.us/corpweb/CorpSearch/CorpSearch.aspx',
+        status: 0,
+        error: 'TypeError',
+      }),
+      '[ma-proxy] host=corp.sec.state.ma.us group=RESIDENTIAL status=0 incapsula=no error=TypeError',
     );
   });
 
@@ -41,13 +52,32 @@ describe('MA residential proxy retry gates', () => {
 
   it('builds a US residential session URL only when the password is set', () => {
     const prev = process.env.APIFY_PROXY_PASSWORD;
+    const prevLower = process.env.apify_proxy_password;
     delete process.env.APIFY_PROXY_PASSWORD;
+    delete process.env.apify_proxy_password;
     assert.equal(residentialProxyUrl('ma1'), null);
     process.env.APIFY_PROXY_PASSWORD = 'unit-test-secret';
     const url = residentialProxyUrl('ma 12');
     assert.match(String(url), /^http:\/\/groups-RESIDENTIAL,country-US,session-ma12:/);
     assert.match(String(url), /@proxy\.apify\.com:8000$/);
+    delete process.env.APIFY_PROXY_PASSWORD;
+    process.env.apify_proxy_password = 'lower-secret';
+    assert.equal(apifyProxyPasswordEnvName(), 'apify_proxy_password');
+    assert.match(String(residentialProxyUrl('ma1')), /session-ma1:/);
+    const line = formatMaProxyAttemptLog({
+      url: 'https://corp.sec.state.ma.us/corpweb/CorpSearch/CorpSearch.aspx?q=secret',
+      status: 403,
+      body: '_Incapsula_Resource',
+    });
+    assert.equal(
+      line,
+      '[ma-proxy] host=corp.sec.state.ma.us group=RESIDENTIAL status=403 incapsula=yes',
+    );
+    assert.equal(line.includes('secret'), false);
+    assert.equal(line.includes('lower-secret'), false);
     if (prev === undefined) delete process.env.APIFY_PROXY_PASSWORD;
     else process.env.APIFY_PROXY_PASSWORD = prev;
+    if (prevLower === undefined) delete process.env.apify_proxy_password;
+    else process.env.apify_proxy_password = prevLower;
   });
 });

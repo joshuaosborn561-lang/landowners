@@ -3,12 +3,21 @@ import {
   DESKTOP_UA,
   createResidentialProxyFetch,
   hasCaptchaOrTurnstile,
+  isBoardFetchInjected,
   looksBlocked,
   shouldRetryMaViaProxy,
   PacedBoardClient,
 } from './http.js';
 import { collectAspNetFields, cookiesFromList, hasAspNetState } from './aspNet.js';
-import { licenseCacheKey, nameStateCacheKey, readBoardCache, writeBoardCache } from './cache.js';
+import {
+  formatMaCacheBypassLog,
+  isBlockedBoardCache,
+  licenseCacheKey,
+  nameStateCacheKey,
+  readBoardCache,
+  shouldReuseBoardCache,
+  writeBoardCache,
+} from './cache.js';
 import { resolveMaSos } from './maSos.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
 
@@ -187,13 +196,10 @@ async function lookupMaLicense(
     ? licenseCacheKey(query.license)
     : nameStateCacheKey(query.businessName || lead.company_name, 'MA');
   const cached = await readBoardCache('ma_csl', cacheKey);
-  if (
-    cached?.body != null &&
-    cached.http_status != null &&
-    !looksBlocked(cached.http_status, cached.body) &&
-    hasRealMaResult(cached.body)
-  ) {
-    return { ...parseMaCslText(cached.body, ACCELA), cached: true, http_status: cached.http_status };
+  if (cached && isBlockedBoardCache(cached)) {
+    console.log(formatMaCacheBypassLog({ board: 'ma_csl', status: cached.http_status, body: cached.body }));
+  } else if (cached && shouldReuseBoardCache(cached) && hasRealMaResult(cached.body || '')) {
+    return { ...parseMaCslText(cached.body || '', ACCELA), cached: true, http_status: cached.http_status };
   }
 
   const accela = await accelaSearch(query, client);
@@ -212,7 +218,14 @@ async function lookupMaLicense(
     }
   }
 
-  const opsi = await opsiSearch(query, new PacedBoardClient({ source: 'ma_csl' }));
+  const opsi = await opsiSearch(
+    query,
+    new PacedBoardClient({
+      source: 'ma_csl',
+      fetch: client.fetchFn,
+      viaProxy: client.viaProxy,
+    }),
+  );
   const parsed = opsi.blocked
     ? { people: [] as ResolverResult['people'], coverage_reason: 'blocked' as const, source: 'ma_csl' as const, source_url: opsi.url }
     : parseMaCslText(htmlToText(opsi.body), opsi.url);
@@ -281,15 +294,24 @@ export async function resolveMaCsl(
   lead: OwnerLead,
   client: PacedBoardClient = new PacedBoardClient({ source: 'ma_csl' }),
 ): Promise<ResolverResult> {
-  const proxyUpFront =
-    !client.fetchFn && (await createResidentialProxyFetch(`ma${lead.lead_id || 'sos'}`));
+  let proxyUpFront = null;
+  try {
+    proxyUpFront =
+      !client.fetchFn && !isBoardFetchInjected()
+        ? await createResidentialProxyFetch(`ma${lead.lead_id || 'sos'}`)
+        : null;
+  } catch {
+    proxyUpFront = null;
+  }
   const sosClient = new PacedBoardClient({
     source: 'ma_sos',
     fetch: proxyUpFront || undefined,
+    viaProxy: Boolean(proxyUpFront),
   });
   const first = await resolveMaCslOnce(lead, client, sosClient);
   if (first.people.length) return first;
-  if (client.fetchFn || proxyUpFront) return first;
+  // Injected tests own the transport. Never attach a live Apify agent over them.
+  if (client.fetchFn || proxyUpFront || isBoardFetchInjected()) return first;
   if (
     !shouldRetryMaViaProxy({
       named: false,
@@ -301,11 +323,16 @@ export async function resolveMaCsl(
   ) {
     return first;
   }
-  const proxyFetch = await createResidentialProxyFetch(`ma${lead.lead_id || 'retry'}`);
+  let proxyFetch = null;
+  try {
+    proxyFetch = await createResidentialProxyFetch(`ma${lead.lead_id || 'retry'}`);
+  } catch {
+    proxyFetch = null;
+  }
   if (!proxyFetch) return first;
   return resolveMaCslOnce(
     lead,
-    new PacedBoardClient({ source: 'ma_csl', fetch: proxyFetch }),
-    new PacedBoardClient({ source: 'ma_sos', fetch: proxyFetch }),
+    new PacedBoardClient({ source: 'ma_csl', fetch: proxyFetch, viaProxy: true }),
+    new PacedBoardClient({ source: 'ma_sos', fetch: proxyFetch, viaProxy: true }),
   );
 }
