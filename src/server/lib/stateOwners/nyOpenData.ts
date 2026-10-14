@@ -1,5 +1,5 @@
 import { isRegistryAgentName, pickBestNameMatchScored, splitPersonName } from './names.js';
-import { fetchSodaJson, sodaWhereContains } from './soda.js';
+import { fetchSodaName } from './soda.js';
 import { lookupBoardRef, upsertBoardRef } from './boardRef.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
 
@@ -49,7 +49,8 @@ export function parseNyOpenDataJson(
   const rec = hit.item;
   const chairman = personFrom(String(rec.chairman_name || ''), sourceUrl);
   const location = personFrom(String(rec.location_name || ''), sourceUrl);
-  const people = [chairman, location].filter((p): p is OwnerPerson => Boolean(p));
+  const process = personFrom(String(rec.dos_process_name || ''), sourceUrl);
+  const people = [chairman, location, process].filter((p): p is OwnerPerson => Boolean(p));
   if (!people.length) {
     return {
       people: [],
@@ -97,11 +98,10 @@ export async function resolveNyOpenData(lead: OwnerLead): Promise<ResolverResult
     if (fromRef.people.length) return fromRef;
   }
 
-  const where = sodaWhereContains('current_entity_name', name);
-  let got = await fetchSodaJson(NY_CORPS, { where, limit: 25 });
+  let got = await fetchSodaName(NY_CORPS, 'current_entity_name', name, 25);
   let parsed = parseNyOpenDataJson(got.rows, name, got.url, lead.city);
   if (!parsed.people.length) {
-    const ceo = await fetchSodaJson(NY_CEO, { where, limit: 25 });
+    const ceo = await fetchSodaName(NY_CEO, 'current_entity_name', name, 25);
     if (ceo.status === 200 && ceo.rows.length) {
       got = ceo;
       parsed = parseNyOpenDataJson(ceo.rows, name, ceo.url, lead.city);

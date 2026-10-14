@@ -5,17 +5,22 @@ import {
   searchFranchiseEntities,
 } from '../texasComptroller.js';
 import { splitPersonName } from './names.js';
+import { resolveTxOpenData } from './txOpenData.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
 
 export async function resolveTxSos(lead: OwnerLead): Promise<ResolverResult> {
   if (!lead.company_name?.trim()) {
     return { people: [], coverage_reason: 'not_found', source: 'tx_sos' };
   }
+  const open = await resolveTxOpenData(lead);
+  if (open.people.length || open.coverage_reason === 'blocked') return open;
   let hits: Array<{ taxpayerId: string; name: string }>;
   try {
     hits = await searchFranchiseEntities(lead.company_name);
   } catch {
-    return { people: [], coverage_reason: 'blocked', source: 'tx_sos', blocked: true };
+    return open.coverage_reason
+      ? open
+      : { people: [], coverage_reason: 'blocked', source: 'tx_sos', blocked: true };
   }
   const ranked = rankFranchiseHits(lead.company_name, hits);
   if (!ranked.length && hits.length) {
@@ -52,5 +57,11 @@ export async function resolveTxSos(lead: OwnerLead): Promise<ResolverResult> {
       match_score: cand.score,
     };
   }
-  return { people: [], coverage_reason: hits.length ? 'name_miss' : 'not_found', source: 'tx_sos' };
+  return {
+    people: [],
+    coverage_reason: hits.length ? 'name_miss' : open.coverage_reason || 'not_found',
+    source: 'tx_sos',
+    match_method: open.match_method,
+    match_score: open.match_score,
+  };
 }

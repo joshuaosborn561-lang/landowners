@@ -99,7 +99,14 @@ export function parseTxTdlrJson(rows: unknown[], sourceUrl: string, companyName?
       if (best) list = [best, ...list.filter((r) => r !== best)];
     }
   }
-  const trade = list.find((r) => isTdlrTradeType(String(r.license_type || ''))) || null;
+  const trade =
+    list.find((r) => isTdlrTradeType(String(r.license_type || ''))) ||
+    (companyName
+      ? list.find((r) => {
+          const owner = String(r.owner_name || '').trim();
+          return Boolean(owner) && !hasCompanyWord(owner);
+        })
+      : null);
   if (!trade) {
     return { people: [], coverage_reason: 'not_found', source: 'tx_tdlr', source_url: sourceUrl };
   }

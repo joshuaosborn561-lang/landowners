@@ -180,7 +180,12 @@ async function lookupMaLicense(
     ? licenseCacheKey(query.license)
     : nameStateCacheKey(query.businessName || lead.company_name, 'MA');
   const cached = await readBoardCache('ma_csl', cacheKey);
-  if (cached?.body != null && cached.http_status != null && !looksBlocked(cached.http_status, cached.body)) {
+  if (
+    cached?.body != null &&
+    cached.http_status != null &&
+    !looksBlocked(cached.http_status, cached.body) &&
+    hasRealMaResult(cached.body)
+  ) {
     return { ...parseMaCslText(cached.body, ACCELA), cached: true, http_status: cached.http_status };
   }
 
@@ -262,15 +267,13 @@ export async function resolveMaCsl(
   const first = await resolveMaCslOnce(lead, client, new PacedBoardClient({ source: 'ma_sos' }));
   if (first.people.length) return first;
   const status = first.http_status ?? 0;
-  const bodyHint = first.coverage_reason === 'blocked' ? '' : '';
-  if (
-    first.coverage_reason !== 'blocked' &&
-    !isPlainHttpBlock(status, bodyHint) &&
-    status !== 404
-  ) {
-    return first;
-  }
   if (first.blocked && status === 200) return first;
+  const canProxy =
+    first.coverage_reason === 'blocked' ||
+    first.coverage_reason === 'not_found' ||
+    isPlainHttpBlock(status, '') ||
+    status === 404;
+  if (!canProxy) return first;
   const proxyFetch = client.fetchFn || (await createResidentialProxyFetch());
   if (!proxyFetch || client.fetchFn) return first;
   return resolveMaCslOnce(

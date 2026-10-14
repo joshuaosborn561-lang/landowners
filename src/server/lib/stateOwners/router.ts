@@ -34,11 +34,13 @@ export async function resolveNewYork(lead: OwnerLead): Promise<ResolverResult> {
 }
 
 export async function resolveTexas(lead: OwnerLead): Promise<ResolverResult> {
-  if (lead.license_number) {
-    const tdlr = await resolveTxTdlr(lead);
-    if (tdlr.people.length || tdlr.coverage_reason === 'blocked') return tdlr;
-  }
-  return resolveTxSos(lead);
+  const tdlr = await resolveTxTdlr(lead);
+  if (tdlr.people.length) return tdlr;
+  const sos = await resolveTxSos(lead);
+  if (sos.people.length) return sos;
+  if (tdlr.coverage_reason === 'blocked') return tdlr;
+  if (sos.coverage_reason === 'blocked') return sos;
+  return sos.coverage_reason && sos.coverage_reason !== 'not_found' ? sos : tdlr.people.length ? tdlr : sos;
 }
 
 export async function resolveLeadByState(lead: OwnerLead): Promise<ResolverResult> {

@@ -73,7 +73,7 @@ export async function resolvePaDos(
     return { people: [], coverage_reason: 'not_found', source: 'pa_dos', source_url: PA_DOS_SEARCH };
   }
   const open = await resolvePaOpenData(lead);
-  if (open.people.length || open.http_status === 200) return open;
+  if (open.people.length || open.coverage_reason === 'blocked') return open;
   const { url, query_string } = paDosSearchUrl(name);
   const key = nameStateCacheKey(name, 'PA');
   const cached = await readBoardCache('pa_dos', key);

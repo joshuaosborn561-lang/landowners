@@ -212,10 +212,16 @@ export async function resolveMnDli(
         http_status: cached.http_status,
       };
     }
-    if (/Bus_Pers,License_Type/.test(cached.body) || /\t/.test(cached.body)) {
-      return { ...parseMnDliCsv(cached.body, lead.company_name, RESIDENTIAL), cached: true, http_status: cached.http_status };
+    if (/^MN_CSV_OK\b/.test(cached.body)) {
+      // Fall through to the in-process full CSV memo. Short slices were stale.
+    } else if (/Bus_Pers,License_Type/.test(cached.body) || /\t/.test(cached.body)) {
+      const lines = cached.body.split(/\r?\n/).filter((l) => l.trim()).length;
+      if (lines >= 50) {
+        return { ...parseMnDliCsv(cached.body, lead.company_name, RESIDENTIAL), cached: true, http_status: cached.http_status };
+      }
+    } else {
+      return { ...parseMnDliText(cached.body, LOOKUP), cached: true, http_status: cached.http_status };
     }
-    return { ...parseMnDliText(cached.body, LOOKUP), cached: true, http_status: cached.http_status };
   }
 
   let csvText = csvMemo && Date.now() - csvMemo.fetchedAt < 6 * 60 * 60 * 1000 ? csvMemo.text : null;
@@ -248,17 +254,11 @@ export async function resolveMnDli(
   }
 
   const parsed = parseMnDliCsv(csvText, lead.company_name, RESIDENTIAL);
-  const needle = normalizeCompanyName(lead.company_name).slice(0, 8);
-  const slice = csvText
-    .split(/\r?\n/)
-    .filter((line, i) => i === 0 || (needle && line.toUpperCase().includes(needle)))
-    .slice(0, 8)
-    .join('\n');
   await writeBoardCache({
     board: 'mn_dli',
     cache_key: key,
     http_status: status,
-    body: slice || csvText.slice(0, 500),
+    body: `MN_CSV_OK\t${normalizeCompanyName(lead.company_name)}\t${parsed.coverage_reason || 'named'}\t${parsed.people.length}`,
     query_string: `name=${normalizeCompanyName(lead.company_name) || lead.company_name}`,
     fetched_url: RESIDENTIAL,
   });

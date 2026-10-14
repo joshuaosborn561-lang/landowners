@@ -18,5 +18,6 @@ export * from './boardRef.js';
 export * from './maSos.js';
 export * from './txTdlr.js';
 export * from './sunbizAdapter.js';
+export * from './txOpenData.js';
 export * from './txSosAdapter.js';
 export * from './router.js';

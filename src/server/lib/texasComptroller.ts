@@ -96,11 +96,12 @@ async function readJson(url: string, key?: string) {
 
 export async function searchFranchiseEntities(name: string): Promise<Array<{ taxpayerId: string; name: string }>> {
   await loadAppSettings();
-  const q = cleanName(name);
+  const q = cleanName(normalizeCompanyName(name) || name);
   if (q.length < 2) return [];
   const publicUrl = new URL(PUBLIC_BASE);
   publicUrl.searchParams.set('name', q);
   let { res, body } = await readJson(publicUrl.toString());
+  if (res.status === 413) return [];
   if (!res.ok) {
     const key = getSetting('texas_cpa_api_key');
     if (key) {
@@ -109,6 +110,7 @@ export async function searchFranchiseEntities(name: string): Promise<Array<{ tax
       ({ res, body } = await readJson(gated.toString(), key));
     }
   }
+  if (res.status === 413) return [];
   if (!res.ok) {
     throw new TexasCpaError(
       'search',

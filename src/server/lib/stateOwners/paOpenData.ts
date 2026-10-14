@@ -1,5 +1,5 @@
 import { isRegistryAgentName, pickBestNameMatchScored, splitPersonName } from './names.js';
-import { fetchSodaJson, sodaWhereContains } from './soda.js';
+import { fetchSodaName } from './soda.js';
 import { lookupBoardRef, upsertBoardRef } from './boardRef.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
 
@@ -136,8 +136,7 @@ export async function resolvePaOpenData(lead: OwnerLead): Promise<ResolverResult
     if (fromRef.people.length) return fromRef;
   }
 
-  const where = sodaWhereContains('business_name', name);
-  const got = await fetchSodaJson(PA_BIZ, { where, limit: 50 });
+  const got = await fetchSodaName(PA_BIZ, 'business_name', name, 50);
   const parsed = parsePaOpenDataJson(got.rows, name, got.url, lead.city);
   if (parsed.people.length) {
     await upsertBoardRef(

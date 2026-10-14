@@ -8,12 +8,26 @@ export interface SodaGetResult {
   body: string;
 }
 
+const STOP = new Set(['AND', 'THE', 'FOR', 'OF', 'WITH']);
+
+export function sodaTokens(name: string): string[] {
+  return sodaNameNeedle(name)
+    .split(' ')
+    .filter((t) => t.length >= 3 && !STOP.has(t));
+}
+
 export function sodaWhereContains(column: string, name: string): string {
-  const needle = sodaNameNeedle(name).replace(/'/g, "''");
-  if (!needle) return '1=0';
-  const tokens = needle.split(' ').filter(Boolean);
-  const likes = tokens.map((t) => `upper(${column}) like '%${t}%'`);
-  return likes.join(' AND ');
+  const tokens = sodaTokens(name);
+  if (!tokens.length) return '1=0';
+  return tokens.map((t) => `upper(${column}) like '%${t.replace(/'/g, "''")}%'`).join(' AND ');
+}
+
+/** First one or two distinctive tokens so a tight AND does not miss. */
+export function sodaWhereContainsLoose(column: string, name: string): string {
+  const tokens = sodaTokens(name);
+  const pick = tokens.slice(0, tokens.length >= 3 ? 2 : 1);
+  if (!pick.length) return sodaWhereContains(column, name);
+  return pick.map((t) => `upper(${column}) like '%${t.replace(/'/g, "''")}%'`).join(' AND ');
 }
 
 export async function fetchSodaJson(
@@ -38,4 +52,21 @@ export async function fetchSodaJson(
     rows = [];
   }
   return { status: res.status, rows, url: res.url || url, query_string, body };
+}
+
+/** Tight token AND, then a looser 1–2 token query when that returns no rows. */
+export async function fetchSodaName(
+  baseUrl: string,
+  column: string,
+  name: string,
+  limit = 50,
+): Promise<SodaGetResult> {
+  const tight = sodaWhereContains(column, name);
+  const got = await fetchSodaJson(baseUrl, { where: tight, limit });
+  if (got.status === 200 && got.rows.length) return got;
+  const loose = sodaWhereContainsLoose(column, name);
+  if (loose === tight) return got;
+  const retry = await fetchSodaJson(baseUrl, { where: loose, limit });
+  if (retry.status === 200 && retry.rows.length) return retry;
+  return got.status === 200 ? got : retry;
 }
