@@ -8,7 +8,7 @@ import { hasSupabase, SCHEMA } from './lib/supabase.js';
 import { supabaseTargetMeta } from './lib/supabaseTarget.js';
 import { enrichmentKeysStatus, loadAppSettings } from './lib/appSettings.js';
 import { formatStartupKeyFlags } from './lib/startupLog.js';
-import { apifyResidentialProxyConfigured } from './lib/stateOwners/http.js';
+import { apifyResidentialProxyConfigured, apifyTokenConfigured } from './lib/stateOwners/http.js';
 import { getShovelsKeyStatus } from './lib/shovelsKey.js';
 import { callingListsRouter } from './routes/callingLists.js';
 import { parcelsRouter } from './routes/parcels.js';
@@ -138,6 +138,7 @@ app.listen(config.port, () => {
           cpa: keys.texas_cpa_api_key.configured,
           fl: keys.florida_sos_api_key.configured,
           apify_residential_proxy: apifyResidentialProxyConfigured(),
+          apify_token: apifyTokenConfigured(),
         }),
       );
     }),

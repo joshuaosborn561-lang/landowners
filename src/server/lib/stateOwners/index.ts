@@ -16,6 +16,7 @@ export * from './paOpenData.js';
 export * from './soda.js';
 export * from './boardRef.js';
 export * from './maSos.js';
+export * from './maSosBrowser.js';
 export * from './txTdlr.js';
 export * from './sunbizAdapter.js';
 export * from './txOpenData.js';

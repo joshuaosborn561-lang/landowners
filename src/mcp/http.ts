@@ -5,7 +5,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { enrichmentKeysStatus } from '../server/lib/appSettings.js';
 import { getShovelsKeyStatus } from '../server/lib/shovelsKey.js';
 import { supabaseTargetMeta } from '../server/lib/supabaseTarget.js';
-import { apifyResidentialProxyConfigured } from '../server/lib/stateOwners/http.js';
+import { apifyResidentialProxyConfigured, apifyTokenConfigured } from '../server/lib/stateOwners/http.js';
 import { createPermitsMcpServer } from './createServer.js';
 
 /**
@@ -146,6 +146,7 @@ export function mountMcpHttp(app: Express): void {
       supabase_schema: target.supabase_schema,
       shovels_api_key: shovelsKey,
       apify_residential_proxy_configured: apifyResidentialProxyConfigured(),
+      apify_token_configured: apifyTokenConfigured(),
       enrichment_keys: {
         veriphone: enrichKeys.veriphone_api_key,
         texas_cpa: enrichKeys.texas_cpa_api_key,

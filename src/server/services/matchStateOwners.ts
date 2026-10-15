@@ -10,6 +10,7 @@ import {
   resolveWaLni,
   resolveNewYork,
   resolveMaCsl,
+  resolveMassachusettsOwners,
   resolveMnDli,
   resolvePaDos,
   resolveTexas,
@@ -227,9 +228,21 @@ export async function matchStateOwners(opts: StateOwnerJobOpts): Promise<Record<
   let written = 0;
   let stopped: { source: BoardSource; status: number; consecutive: number } | null = null;
 
-  for (const lead of leads) {
+  let batch: ResolverResult[] | null = null;
+  if (tool === 'match_massachusetts_owners') {
     try {
-      const result = await resolve(lead);
+      batch = await resolveMassachusettsOwners(leads);
+    } catch (err) {
+      if (err instanceof BoardJobStopError) {
+        stopped = { source: err.source, status: err.status, consecutive: err.consecutive };
+      }
+    }
+  }
+
+  for (const [i, lead] of leads.entries()) {
+    if (stopped) break;
+    try {
+      const result = batch?.[i] ?? (await resolve(lead));
       results.push(result);
       const st = normalizeState(lead.state);
       const gotName = result.people.length > 0;
