@@ -167,6 +167,8 @@ export function pickBestNameMatchScored<T>(
     zipOf?: (item: T) => string | null | undefined;
     minTrigram?: number;
     allowTrigram?: boolean;
+    /** Default true. MN DLI turns this off so "Jones" cannot match "Jones and Sons". */
+    allowSubstring?: boolean;
   },
 ): NameMatchHit<T> | null {
   const key = normalizeCompanyName(target);
@@ -182,7 +184,7 @@ export function pickBestNameMatchScored<T>(
     if (hit === key) {
       score = 100;
       method = 'exact';
-    } else if (hit.includes(key) || key.includes(hit)) {
+    } else if (opts?.allowSubstring !== false && (hit.includes(key) || key.includes(hit))) {
       score = 80;
       method = 'substring';
     } else if (opts?.allowTrigram !== false) {

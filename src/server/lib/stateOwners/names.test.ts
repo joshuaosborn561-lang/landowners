@@ -155,6 +155,20 @@ describe('trigram fallback', () => {
     );
     assert.equal(hit?.item.n, 'JOHNSON MECHNICAL GRP');
     assert.equal(hit?.method, 'trigram');
+    const noSubstring = pickBestNameMatchScored(
+      'Builders LLC',
+      [{ n: 'ACME BUILDERS LLC' }],
+      (r) => r.n,
+      { allowTrigram: true, allowSubstring: false, minTrigram: 0.8 },
+    );
+    assert.equal(noSubstring, null);
+    const stillSubstring = pickBestNameMatchScored(
+      'Builders LLC',
+      [{ n: 'ACME BUILDERS LLC' }],
+      (r) => r.n,
+      { allowTrigram: false },
+    );
+    assert.equal(stillSubstring?.method, 'substring');
     assert.equal(sodaNameNeedle('Smith HVAC, LLC DBA Cool'), 'SMITH HVAC');
     assert.match(sodaWhereContains('business_name', 'Smith HVAC Heating Cooling LLC'), /SMITH/);
     assert.match(sodaWhereContains('business_name', 'Smith HVAC Heating Cooling LLC'), /COOLING/);
@@ -441,6 +455,56 @@ describe('other board parsers', () => {
     const result = parseMnDliCsv(csv, 'Acme Builders LLC', 'u');
     assert.equal(result.people[0]?.last_name, 'JONES');
     assert.equal(result.coverage_reason, null);
+  });
+
+  it('links one MN qualifier to two companies only when the company name matches', () => {
+    const csv = [
+      'Bus_Pers,License_Type,License_Subtype,Name,DBA_Name,Addr1,Addr2,City,St,Zip,Phone_No,Email_Address,Lic_Number,Status,Orig_Date,Exp_Date,Enforcement_Action,Renewal_in_Progress',
+      'Business,Residential Contractors,Residential Building Contractor,ACME BUILDERS LLC,,100 MAIN ST,,ST PAUL,MN,55101,6515550100,,BC000111,Issued,,,,',
+      'Personal,Residential Contractors,Qualifying Builder,"JONES, PAT",,100 MAIN ST,,ST PAUL,MN,55101,6515550100,,QB000111,Issued,,,,',
+      'Business,Residential Contractors,Residential Building Contractor,ZETA ROOFING LLC,,200 OAK ST,,MINNEAPOLIS,MN,55401,6125559999,,BC000222,Issued,,,,',
+      'Personal,Residential Contractors,Qualifying Builder,"JONES, PAT",,200 OAK ST,,MINNEAPOLIS,MN,55401,6125559999,,QB000222,Issued,,,,',
+      'Business,Residential Contractors,Residential Building Contractor,OTHER BUILDERS LLC,,999 PINE ST,,ST PAUL,MN,55101,6515550199,,BC000333,Issued,,,,',
+    ].join('\n');
+    const acme = parseMnDliCsv(csv, 'Acme Builders LLC', 'u');
+    const zeta = parseMnDliCsv(csv, 'Zeta Roofing LLC', 'u');
+    const other = parseMnDliCsv(csv, 'Other Builders LLC', 'u');
+    assert.equal(acme.people.length, 1);
+    assert.equal(acme.people[0]?.last_name, 'JONES');
+    assert.equal(acme.coverage_reason, null);
+    assert.equal(zeta.people.length, 1);
+    assert.equal(zeta.people[0]?.last_name, 'JONES');
+    assert.equal(zeta.coverage_reason, null);
+    assert.equal(other.people.length, 0);
+    assert.equal(other.coverage_reason, 'name_miss');
+  });
+
+  it('matches a MN DLI row by exact license number even when the permit company name differs', () => {
+    const csv = [
+      'Bus_Pers,License_Type,License_Subtype,Name,DBA_Name,Addr1,Addr2,City,St,Zip,Phone_No,Email_Address,Lic_Number,Status,Orig_Date,Exp_Date,Enforcement_Action,Renewal_in_Progress',
+      'Business,Residential Contractors,Residential Building Contractor,ACME BUILDERS LLC,,100 MAIN ST,,ST PAUL,MN,55101,6515550100,,BC000111,Issued,,,,',
+      'Personal,Residential Contractors,Qualifying Builder,"JONES, PAT",,100 MAIN ST,,ST PAUL,MN,55101,6515550100,,QB000111,Issued,,,,',
+      'Business,Residential Contractors,Residential Building Contractor,ZETA ROOFING LLC,,200 OAK ST,,MINNEAPOLIS,MN,55401,6125559999,,BC000222,Issued,,,,',
+    ].join('\n');
+    const result = parseMnDliCsv(csv, 'Unrelated Ventures LLC', 'u', 'BC-000111');
+    assert.equal(result.people.length, 1);
+    assert.equal(result.people[0]?.last_name, 'JONES');
+    assert.equal(result.match_method, 'license');
+    assert.equal(result.coverage_reason, null);
+  });
+
+  it('rejects a MN name-only coincidence instead of assigning an unrelated qualifier', () => {
+    const csv = [
+      'Bus_Pers,License_Type,License_Subtype,Name,DBA_Name,Addr1,Addr2,City,St,Zip,Phone_No,Email_Address,Lic_Number,Status,Orig_Date,Exp_Date,Enforcement_Action,Renewal_in_Progress',
+      'Business,Residential Contractors,Residential Building Contractor,NORTHSTAR CONSTRUCTION LLC,,100 MAIN ST,,ST PAUL,MN,55101,6515550100,,BC000111,Issued,,,,',
+      'Personal,Residential Contractors,Qualifying Builder,"JONES, PAT",,100 MAIN ST,,ST PAUL,MN,55101,6515550100,,QB000111,Issued,,,,',
+    ].join('\n');
+    const similar = parseMnDliCsv(csv, 'Northland Construction LLC', 'u');
+    const substring = parseMnDliCsv(csv, 'Construction LLC', 'u');
+    assert.equal(similar.people.length, 0);
+    assert.equal(similar.coverage_reason, 'name_miss');
+    assert.equal(substring.people.length, 0);
+    assert.equal(substring.coverage_reason, 'name_miss');
   });
 });
 

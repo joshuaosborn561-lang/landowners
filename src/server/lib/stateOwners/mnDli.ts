@@ -2,12 +2,12 @@ import {
   looksLikeSolePropPerson,
   normalizeCompanyName,
   parseBoardPersonName,
-  pickBestNameMatch,
   pickBestNameMatchScored,
   splitPersonName,
+  type NameMatchHit,
 } from './names.js';
 import { looksBlocked, PacedBoardClient } from './http.js';
-import { nameStateCacheKey, readBoardCache, writeBoardCache } from './cache.js';
+import { licenseCacheKey, nameStateCacheKey, readBoardCache, writeBoardCache } from './cache.js';
 import type { OwnerLead, OwnerPerson, ResolverResult } from './types.js';
 
 const LOOKUP = 'https://www.dli.mn.gov/license-and-registration-lookup';
@@ -61,19 +61,42 @@ function phoneKey(row: MnRow): string {
   return digits.length >= 10 ? digits.slice(-10) : '';
 }
 
-function streetZipKey(row: MnRow): string {
-  const street = String(row.Addr1 || '')
-    .trim()
+/** Tight MN company match: exact normalized name, or trigram ≥ this. No substring. */
+export const MN_NAME_TRIGRAM_THRESHOLD = 0.8;
+
+export function normalizeMnLicense(raw: string | null | undefined): string {
+  return String(raw || '')
     .toUpperCase()
-    .split(/\s+/)[0] || '';
-  const zip = String(row.Zip || '').replace(/\D/g, '').slice(0, 5);
-  return street && zip.length === 5 && /^\d+$/.test(street) ? `${street}|${zip}` : '';
+    .replace(/[^A-Z0-9]/g, '');
 }
 
-function pickUnique(rows: MnRow[]): MnRow | null {
-  if (rows.length === 1) return rows[0]!;
-  if (rows.length > 1) return rows[0]!;
-  return null;
+function labeledCompanyRows(businesses: MnRow[]): Array<{ row: MnRow; label: string }> {
+  const out: Array<{ row: MnRow; label: string }> = [];
+  for (const row of businesses) {
+    if (row.Name) out.push({ row, label: row.Name });
+    if (row.DBA_Name) out.push({ row, label: row.DBA_Name });
+  }
+  return out;
+}
+
+function pickMnDliCompany(
+  target: string,
+  businesses: MnRow[],
+  opts: { minTrigram: number; allowSubstring: boolean },
+): NameMatchHit<MnRow> | null {
+  if (!target) return null;
+  const hit = pickBestNameMatchScored(target, labeledCompanyRows(businesses), (x) => x.label, {
+    allowTrigram: true,
+    allowSubstring: opts.allowSubstring,
+    minTrigram: opts.minTrigram,
+  });
+  return hit ? { item: hit.item.row, score: hit.score, method: hit.method } : null;
+}
+
+function uniqueBy(rows: MnRow[], key: string, keyOf: (row: MnRow) => string): MnRow | null {
+  if (!key) return null;
+  const hits = rows.filter((r) => keyOf(r) === key);
+  return hits.length === 1 ? hits[0]! : null;
 }
 
 function isIssued(row: MnRow): boolean {
@@ -88,89 +111,144 @@ function isQualifier(row: MnRow): boolean {
   return /qualif/i.test(row.License_Subtype || '') || /^Q/i.test(row.Lic_Number || '');
 }
 
-/** Nightly DLI residential-contractor dump. Qualifying people are Personal rows. */
-export function parseMnDliCsv(text: string, companyName: string, sourceUrl: string): ResolverResult {
+function personFromRow(
+  row: MnRow,
+  role: OwnerPerson['role'],
+  sourceUrl: string,
+  phone: string | null,
+  extra?: Pick<ResolverResult, 'match_method' | 'match_score'>,
+): ResolverResult {
+  const split = role === 'qualifying_individual' ? parseBoardPersonName(row.Name) : splitPersonName(row.Name);
+  const person: OwnerPerson = {
+    first_name: split.first_name,
+    last_name: split.last_name,
+    full_name_raw: split.full_name_raw,
+    role,
+    source: 'mn_dli',
+    source_url: sourceUrl,
+    confidence: extra?.match_method === 'license' ? 'high' : 'medium',
+    business_phone: phone,
+    review_flag: split.review_flag || undefined,
+  };
+  return {
+    people: [person],
+    coverage_reason: null,
+    source: 'mn_dli',
+    source_url: sourceUrl,
+    business_phone: phone,
+    match_method: extra?.match_method,
+    match_score: extra?.match_score,
+  };
+}
+
+function qualifierForBusiness(biz: MnRow, peopleRows: MnRow[]): MnRow | null {
+  const addr = addrKey(biz);
+  const byAddr = addr && addr !== '|' ? uniqueBy(peopleRows, addr, addrKey) : null;
+  if (byAddr) return byAddr;
+  return uniqueBy(peopleRows, phoneKey(biz), phoneKey);
+}
+
+/** Nightly DLI dump. Take a person only when the DLI company matches the permit (tight name) or license is exact. */
+export function parseMnDliCsv(
+  text: string,
+  companyName: string,
+  sourceUrl: string,
+  licenseNumber?: string | null,
+): ResolverResult {
   const rows = parseMnCsv(text);
   const target = normalizeCompanyName(companyName);
-  if (!target) {
+  const wantLic = normalizeMnLicense(licenseNumber);
+  if (!target && !wantLic) {
     return { people: [], coverage_reason: 'not_found', source: 'mn_dli', source_url: sourceUrl };
   }
 
   const businesses = rows.filter((r) => !isPerson(r));
-  const scored = pickBestNameMatchScored(
-    target,
-    businesses,
-    (r) => `${r.Name || ''} ${r.DBA_Name || ''}`,
-    { allowTrigram: true },
-  );
-  const exact = scored
-    ? businesses.filter((r) => r === scored.item || pickBestNameMatch(target, [r.Name || '', r.DBA_Name || ''], (n) => n))
-    : businesses.filter((r) => Boolean(pickBestNameMatch(target, [r.Name || '', r.DBA_Name || ''], (n) => n)));
-  const biz = exact.find(isIssued) || exact[0] || scored?.item || null;
-  if (exact.length && !exact.some(isIssued) && !isIssued(biz || {})) {
-    return { people: [], coverage_reason: 'inactive_license', source: 'mn_dli', source_url: sourceUrl };
-  }
-
   const peopleRows = rows.filter((r) => isPerson(r) && isQualifier(r) && isIssued(r));
-  let qualifier: MnRow | null = null;
-  if (biz) {
-    const key = addrKey(biz);
-    if (key && key !== '|') qualifier = pickUnique(peopleRows.filter((r) => addrKey(r) === key));
-    const phone = phoneKey(biz);
-    if (!qualifier && phone) qualifier = pickUnique(peopleRows.filter((r) => phoneKey(r) === phone));
-    const streetZip = streetZipKey(biz);
-    if (!qualifier && streetZip) qualifier = pickUnique(peopleRows.filter((r) => streetZipKey(r) === streetZip));
-    if (!qualifier) {
-      const city = normalizeCompanyName(biz.City || '');
-      const sameCity = peopleRows.filter((r) => normalizeCompanyName(r.City || '') === city && city);
-      if (sameCity.length === 1) qualifier = sameCity[0]!;
+
+  let biz: MnRow | null = null;
+  let licensePerson: MnRow | null = null;
+  let matchMethod: ResolverResult['match_method'];
+  let matchScore: number | undefined;
+
+  if (wantLic) {
+    const licHits = rows.filter((r) => normalizeMnLicense(r.Lic_Number) === wantLic);
+    const licRow = licHits.find(isIssued) || licHits[0] || null;
+    if (licRow && !licHits.some(isIssued)) {
+      return { people: [], coverage_reason: 'inactive_license', source: 'mn_dli', source_url: sourceUrl, match_method: 'license', match_score: 100 };
+    }
+    if (licRow && isPerson(licRow)) {
+      if (!isQualifier(licRow) || !isIssued(licRow)) {
+        return { people: [], coverage_reason: 'inactive_license', source: 'mn_dli', source_url: sourceUrl, match_method: 'license', match_score: 100 };
+      }
+      licensePerson = licRow;
+      matchMethod = 'license';
+      matchScore = 100;
+    } else if (licRow) {
+      biz = licRow;
+      matchMethod = 'license';
+      matchScore = 100;
     }
   }
 
+  const tight = !biz && !licensePerson && target ? pickMnDliCompany(target, businesses, {
+    minTrigram: MN_NAME_TRIGRAM_THRESHOLD,
+    allowSubstring: false,
+  }) : null;
+  if (tight) {
+    const peers = businesses.filter((r) => {
+      if (r === tight.item) return true;
+      return Boolean(
+        pickMnDliCompany(target, [r], { minTrigram: MN_NAME_TRIGRAM_THRESHOLD, allowSubstring: false }),
+      );
+    });
+    biz = peers.find(isIssued) || peers[0] || tight.item;
+    matchMethod = tight.method;
+    matchScore = tight.score;
+    if (peers.length && !peers.some(isIssued) && !isIssued(biz)) {
+      return { people: [], coverage_reason: 'inactive_license', source: 'mn_dli', source_url: sourceUrl, match_method: matchMethod, match_score: matchScore };
+    }
+  }
+
+  if (!biz && !licensePerson) {
+    const loose = target
+      ? pickMnDliCompany(target, businesses, { minTrigram: 0.48, allowSubstring: true })
+      : null;
+    if (loose) {
+      return {
+        people: [],
+        coverage_reason: 'name_miss',
+        source: 'mn_dli',
+        source_url: sourceUrl,
+        match_method: loose.method,
+        match_score: loose.score,
+      };
+    }
+    return { people: [], coverage_reason: 'not_found', source: 'mn_dli', source_url: sourceUrl };
+  }
+
+  const qualifier = licensePerson || (biz ? qualifierForBusiness(biz, peopleRows) : null);
   const phone = (qualifier?.Phone_No || biz?.Phone_No || '').trim() || null;
+  const extra = { match_method: matchMethod, match_score: matchScore };
+
   if (qualifier?.Name) {
-    const split = parseBoardPersonName(qualifier.Name);
-    const person: OwnerPerson = {
-      first_name: split.first_name,
-      last_name: split.last_name,
-      full_name_raw: split.full_name_raw,
-      role: 'qualifying_individual',
-      source: 'mn_dli',
-      source_url: sourceUrl,
-      confidence: 'medium',
-      business_phone: phone,
-      review_flag: split.review_flag || undefined,
-    };
-    return { people: [person], coverage_reason: null, source: 'mn_dli', source_url: sourceUrl, business_phone: phone };
+    return personFromRow(qualifier, 'qualifying_individual', sourceUrl, phone, extra);
   }
 
   if (biz && looksLikeSolePropPerson(biz.Name || '')) {
-    const split = splitPersonName(biz.Name);
-    const person: OwnerPerson = {
-      first_name: split.first_name,
-      last_name: split.last_name,
-      full_name_raw: split.full_name_raw,
-      role: 'sole_proprietor',
-      source: 'mn_dli',
-      source_url: sourceUrl,
-      confidence: 'medium',
-      business_phone: phone,
-      review_flag: split.review_flag || undefined,
-    };
-    return { people: [person], coverage_reason: null, source: 'mn_dli', source_url: sourceUrl, business_phone: phone };
+    return personFromRow(biz, 'sole_proprietor', sourceUrl, phone, extra);
   }
 
   if (biz && looksLikeSolePropPerson(companyName)) {
-    return { people: [], coverage_reason: 'sole_prop_dba', source: 'mn_dli', source_url: sourceUrl };
+    return { people: [], coverage_reason: 'sole_prop_dba', source: 'mn_dli', source_url: sourceUrl, match_method: matchMethod, match_score: matchScore };
   }
-  if (biz) {
+  if (biz || licensePerson) {
     return {
       people: [],
       coverage_reason: 'name_miss',
       source: 'mn_dli',
       source_url: sourceUrl,
-      match_method: scored?.method,
-      match_score: scored?.score,
+      match_method: matchMethod,
+      match_score: matchScore,
     };
   }
   return { people: [], coverage_reason: 'not_found', source: 'mn_dli', source_url: sourceUrl };
@@ -215,10 +293,13 @@ export async function resolveMnDli(
   lead: OwnerLead,
   client: PacedBoardClient = new PacedBoardClient({ source: 'mn_dli' }),
 ): Promise<ResolverResult> {
-  if (!lead.company_name?.trim()) {
+  const license = normalizeMnLicense(lead.license_number);
+  if (!lead.company_name?.trim() && !license) {
     return { people: [], coverage_reason: 'not_found', source: 'mn_dli', source_url: LOOKUP };
   }
-  const key = nameStateCacheKey(lead.company_name, 'MN');
+  const key = lead.company_name?.trim()
+    ? nameStateCacheKey(lead.company_name, 'MN')
+    : licenseCacheKey(license);
   const cached = await readBoardCache('mn_dli', key);
   if (cached?.body != null && cached.http_status != null) {
     if (looksBlocked(cached.http_status, cached.body)) {
@@ -237,7 +318,11 @@ export async function resolveMnDli(
     } else if (/Bus_Pers,License_Type/.test(cached.body) || /\t/.test(cached.body)) {
       const lines = cached.body.split(/\r?\n/).filter((l) => l.trim()).length;
       if (lines >= 50) {
-        return { ...parseMnDliCsv(cached.body, lead.company_name, RESIDENTIAL), cached: true, http_status: cached.http_status };
+        return {
+          ...parseMnDliCsv(cached.body, lead.company_name, RESIDENTIAL, lead.license_number),
+          cached: true,
+          http_status: cached.http_status,
+        };
       }
     } else {
       return { ...parseMnDliText(cached.body, LOOKUP), cached: true, http_status: cached.http_status };
@@ -273,13 +358,13 @@ export async function resolveMnDli(
     csvMemo = { fetchedAt: Date.now(), text: csvText };
   }
 
-  const parsed = parseMnDliCsv(csvText, lead.company_name, RESIDENTIAL);
+  const parsed = parseMnDliCsv(csvText, lead.company_name, RESIDENTIAL, lead.license_number);
   await writeBoardCache({
     board: 'mn_dli',
     cache_key: key,
     http_status: status,
     body: `MN_CSV_OK\t${normalizeCompanyName(lead.company_name)}\t${parsed.coverage_reason || 'named'}\t${parsed.people.length}`,
-    query_string: `name=${normalizeCompanyName(lead.company_name) || lead.company_name}`,
+    query_string: `name=${normalizeCompanyName(lead.company_name) || lead.company_name}${license ? `&lic=${license}` : ''}`,
     fetched_url: RESIDENTIAL,
   });
   return { ...parsed, http_status: status };
