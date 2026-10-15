@@ -1,3 +1,5 @@
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
 import {
   looksLikeSolePropPerson,
   normalizeCompanyName,
@@ -40,16 +42,32 @@ export function parseCsvLine(line: string): string[] {
 
 type MnRow = Record<string, string>;
 
-export function parseMnCsv(text: string): MnRow[] {
-  const lines = String(text || '').split(/\r?\n/).filter((l) => l.trim());
-  if (!lines.length) return [];
-  const header = parseCsvLine(lines[0]!).map((h) => h.trim());
-  return lines.slice(1).map((line) => {
-    const cols = parseCsvLine(line);
-    const row: MnRow = {};
-    for (let i = 0; i < header.length; i += 1) row[header[i]!] = cols[i] || '';
-    return row;
-  });
+/** Drop unused DLI columns so the in-memory index is not a second copy of the CSV. */
+const KEEP_FIELDS = new Set([
+  'Bus_Pers',
+  'License_Subtype',
+  'Name',
+  'DBA_Name',
+  'Addr1',
+  'City',
+  'Phone_No',
+  'Lic_Number',
+  'Status',
+]);
+
+const GENERIC_TOKENS = new Set(
+  'THE A AN AND LLC INC INCORPORATED LTD LP LLP PLLC PC PA CO COMPANY CORP CORPORATION CONSTRUCTION BUILDER BUILDERS ELECTRIC ELECTRICAL PLUMBING ROOFING SERVICE SERVICES CONTRACTOR CONTRACTORS GROUP ENTERPRISES ASSOCIATES INDUSTRIES'.split(
+    ' ',
+  ),
+);
+
+/** Tight MN company match: exact normalized name, or trigram ≥ this. No substring. */
+export const MN_NAME_TRIGRAM_THRESHOLD = 0.8;
+
+export function normalizeMnLicense(raw: string | null | undefined): string {
+  return String(raw || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
 }
 
 function addrKey(row: MnRow): string {
@@ -61,42 +79,10 @@ function phoneKey(row: MnRow): string {
   return digits.length >= 10 ? digits.slice(-10) : '';
 }
 
-/** Tight MN company match: exact normalized name, or trigram ≥ this. No substring. */
-export const MN_NAME_TRIGRAM_THRESHOLD = 0.8;
-
-export function normalizeMnLicense(raw: string | null | undefined): string {
-  return String(raw || '')
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '');
-}
-
-function labeledCompanyRows(businesses: MnRow[]): Array<{ row: MnRow; label: string }> {
-  const out: Array<{ row: MnRow; label: string }> = [];
-  for (const row of businesses) {
-    if (row.Name) out.push({ row, label: row.Name });
-    if (row.DBA_Name) out.push({ row, label: row.DBA_Name });
-  }
-  return out;
-}
-
-function pickMnDliCompany(
-  target: string,
-  businesses: MnRow[],
-  opts: { minTrigram: number; allowSubstring: boolean },
-): NameMatchHit<MnRow> | null {
-  if (!target) return null;
-  const hit = pickBestNameMatchScored(target, labeledCompanyRows(businesses), (x) => x.label, {
-    allowTrigram: true,
-    allowSubstring: opts.allowSubstring,
-    minTrigram: opts.minTrigram,
-  });
-  return hit ? { item: hit.item.row, score: hit.score, method: hit.method } : null;
-}
-
-function uniqueBy(rows: MnRow[], key: string, keyOf: (row: MnRow) => string): MnRow | null {
-  if (!key) return null;
-  const hits = rows.filter((r) => keyOf(r) === key);
-  return hits.length === 1 ? hits[0]! : null;
+function distinctiveTokens(norm: string): string[] {
+  return String(norm || '')
+    .split(' ')
+    .filter((t) => t.length >= 4 && !GENERIC_TOKENS.has(t));
 }
 
 function isIssued(row: MnRow): boolean {
@@ -109,6 +95,163 @@ function isPerson(row: MnRow): boolean {
 
 function isQualifier(row: MnRow): boolean {
   return /qualif/i.test(row.License_Subtype || '') || /^Q/i.test(row.Lic_Number || '');
+}
+
+function pushMap(map: Map<string, MnRow[]>, key: string, row: MnRow): void {
+  if (!key) return;
+  const list = map.get(key);
+  if (list) list.push(row);
+  else map.set(key, [row]);
+}
+
+function uniqueInMap(map: Map<string, MnRow[]>, key: string): MnRow | null {
+  if (!key) return null;
+  const hits = map.get(key);
+  return hits && hits.length === 1 ? hits[0]! : null;
+}
+
+export interface MnIndex {
+  rows: number;
+  byLicense: Map<string, MnRow>;
+  byName: Map<string, MnRow[]>;
+  byToken: Map<string, MnRow[]>;
+  peopleByAddr: Map<string, MnRow[]>;
+  peopleByPhone: Map<string, MnRow[]>;
+}
+
+export function createMnIndex(): MnIndex {
+  return {
+    rows: 0,
+    byLicense: new Map(),
+    byName: new Map(),
+    byToken: new Map(),
+    peopleByAddr: new Map(),
+    peopleByPhone: new Map(),
+  };
+}
+
+function emptyIndex(): MnIndex {
+  return createMnIndex();
+}
+
+function rowFromCols(header: string[], cols: string[]): MnRow {
+  const row: MnRow = {};
+  for (let c = 0; c < header.length; c += 1) {
+    const key = header[c]!;
+    if (!KEEP_FIELDS.has(key)) continue;
+    const val = cols[c] || '';
+    if (val) row[key] = val;
+  }
+  return row;
+}
+
+function ingestMnLine(index: MnIndex, header: string[], line: string): void {
+  if (!line.trim()) return;
+  addToIndex(index, rowFromCols(header, parseCsvLine(line)));
+}
+
+function indexBusinessName(index: MnIndex, row: MnRow, raw: string): void {
+  const norm = normalizeCompanyName(raw);
+  if (!norm) return;
+  pushMap(index.byName, norm, row);
+  for (const tok of distinctiveTokens(norm)) pushMap(index.byToken, tok, row);
+}
+
+function addToIndex(index: MnIndex, row: MnRow): void {
+  index.rows += 1;
+  const lic = normalizeMnLicense(row.Lic_Number);
+  if (lic) {
+    const prev = index.byLicense.get(lic);
+    if (!prev || (!isIssued(prev) && isIssued(row))) index.byLicense.set(lic, row);
+  }
+  if (isPerson(row)) {
+    if (isQualifier(row) && isIssued(row)) {
+      const addr = addrKey(row);
+      if (addr && addr !== '|') pushMap(index.peopleByAddr, addr, row);
+      pushMap(index.peopleByPhone, phoneKey(row), row);
+    }
+    return;
+  }
+  if (row.Name) indexBusinessName(index, row, row.Name);
+  if (row.DBA_Name) indexBusinessName(index, row, row.DBA_Name);
+}
+
+/** Stream a DLI CSV into maps. Does not keep the raw text or a master row list. */
+export function ingestMnCsv(index: MnIndex, text: string): void {
+  const str = String(text || '');
+  if (!str) return;
+  let start = 0;
+  const nl = str.indexOf('\n');
+  const firstLine = (nl < 0 ? str : str.slice(0, nl)).replace(/\r$/, '');
+  const header = parseCsvLine(firstLine).map((h) => h.trim());
+  const hasHeader = header.includes('Bus_Pers') || header.includes('License_Type');
+  if (!hasHeader) return;
+  start = nl < 0 ? str.length : nl + 1;
+  let i = start;
+  while (i < str.length) {
+    let j = str.indexOf('\n', i);
+    if (j < 0) j = str.length;
+    const line = str.slice(i, j).replace(/\r$/, '');
+    i = j + 1;
+    ingestMnLine(index, header, line);
+  }
+}
+
+/** Line-at-a-time ingest so a 40MB dump is never held as one string plus the index. */
+export async function ingestMnCsvFile(index: MnIndex, filePath: string): Promise<void> {
+  const rl = createInterface({
+    input: createReadStream(filePath, { encoding: 'utf8' }),
+    crlfDelay: Infinity,
+  });
+  let header: string[] | null = null;
+  for await (const raw of rl) {
+    const line = raw.replace(/\r$/, '');
+    if (!header) {
+      header = parseCsvLine(line).map((h) => h.trim());
+      if (!(header.includes('Bus_Pers') || header.includes('License_Type'))) {
+        header = null;
+      }
+      continue;
+    }
+    ingestMnLine(index, header, line);
+  }
+}
+
+export function parseMnCsv(text: string): MnRow[] {
+  const index = emptyIndex();
+  ingestMnCsv(index, text);
+  return [...index.byLicense.values()];
+}
+
+function nameCandidates(index: MnIndex, target: string): { rows: MnRow[]; exact: boolean } {
+  const exact = index.byName.get(target);
+  if (exact?.length) return { rows: exact, exact: true };
+  const seen = new Set<MnRow>();
+  for (const tok of distinctiveTokens(target)) {
+    const list = index.byToken.get(tok);
+    if (!list) continue;
+    for (const row of list) seen.add(row);
+  }
+  return { rows: [...seen], exact: false };
+}
+
+function pickMnDliCompany(
+  target: string,
+  businesses: MnRow[],
+  opts: { minTrigram: number; allowSubstring: boolean },
+): NameMatchHit<MnRow> | null {
+  if (!target || !businesses.length) return null;
+  const labeled: Array<{ row: MnRow; label: string }> = [];
+  for (const row of businesses) {
+    if (row.Name) labeled.push({ row, label: row.Name });
+    if (row.DBA_Name) labeled.push({ row, label: row.DBA_Name });
+  }
+  const hit = pickBestNameMatchScored(target, labeled, (x) => x.label, {
+    allowTrigram: true,
+    allowSubstring: opts.allowSubstring,
+    minTrigram: opts.minTrigram,
+  });
+  return hit ? { item: hit.item.row, score: hit.score, method: hit.method } : null;
 }
 
 function personFromRow(
@@ -141,29 +284,24 @@ function personFromRow(
   };
 }
 
-function qualifierForBusiness(biz: MnRow, peopleRows: MnRow[]): MnRow | null {
+function qualifierForBusiness(index: MnIndex, biz: MnRow): MnRow | null {
   const addr = addrKey(biz);
-  const byAddr = addr && addr !== '|' ? uniqueBy(peopleRows, addr, addrKey) : null;
+  const byAddr = addr && addr !== '|' ? uniqueInMap(index.peopleByAddr, addr) : null;
   if (byAddr) return byAddr;
-  return uniqueBy(peopleRows, phoneKey(biz), phoneKey);
+  return uniqueInMap(index.peopleByPhone, phoneKey(biz));
 }
 
-/** Nightly DLI dump. Take a person only when the DLI company matches the permit (tight name) or license is exact. */
-export function parseMnDliCsv(
-  text: string,
+export function lookupMnIndex(
+  index: MnIndex,
   companyName: string,
   sourceUrl: string,
   licenseNumber?: string | null,
 ): ResolverResult {
-  const rows = parseMnCsv(text);
   const target = normalizeCompanyName(companyName);
   const wantLic = normalizeMnLicense(licenseNumber);
   if (!target && !wantLic) {
     return { people: [], coverage_reason: 'not_found', source: 'mn_dli', source_url: sourceUrl };
   }
-
-  const businesses = rows.filter((r) => !isPerson(r));
-  const peopleRows = rows.filter((r) => isPerson(r) && isQualifier(r) && isIssued(r));
 
   let biz: MnRow | null = null;
   let licensePerson: MnRow | null = null;
@@ -171,9 +309,8 @@ export function parseMnDliCsv(
   let matchScore: number | undefined;
 
   if (wantLic) {
-    const licHits = rows.filter((r) => normalizeMnLicense(r.Lic_Number) === wantLic);
-    const licRow = licHits.find(isIssued) || licHits[0] || null;
-    if (licRow && !licHits.some(isIssued)) {
+    const licRow = index.byLicense.get(wantLic) || null;
+    if (licRow && !isIssued(licRow)) {
       return { people: [], coverage_reason: 'inactive_license', source: 'mn_dli', source_url: sourceUrl, match_method: 'license', match_score: 100 };
     }
     if (licRow && isPerson(licRow)) {
@@ -190,43 +327,41 @@ export function parseMnDliCsv(
     }
   }
 
-  const tight = !biz && !licensePerson && target ? pickMnDliCompany(target, businesses, {
-    minTrigram: MN_NAME_TRIGRAM_THRESHOLD,
-    allowSubstring: false,
-  }) : null;
-  if (tight) {
-    const peers = businesses.filter((r) => {
-      if (r === tight.item) return true;
-      return Boolean(
-        pickMnDliCompany(target, [r], { minTrigram: MN_NAME_TRIGRAM_THRESHOLD, allowSubstring: false }),
-      );
-    });
-    biz = peers.find(isIssued) || peers[0] || tight.item;
-    matchMethod = tight.method;
-    matchScore = tight.score;
-    if (peers.length && !peers.some(isIssued) && !isIssued(biz)) {
-      return { people: [], coverage_reason: 'inactive_license', source: 'mn_dli', source_url: sourceUrl, match_method: matchMethod, match_score: matchScore };
+  if (!biz && !licensePerson && target) {
+    const found = nameCandidates(index, target);
+    if (found.exact) {
+      const peers = found.rows;
+      biz = peers.find(isIssued) || peers[0] || null;
+      matchMethod = 'exact';
+      matchScore = 100;
+      if (biz && peers.length && !peers.some(isIssued) && !isIssued(biz)) {
+        return { people: [], coverage_reason: 'inactive_license', source: 'mn_dli', source_url: sourceUrl, match_method: matchMethod, match_score: matchScore };
+      }
+    } else if (found.rows.length) {
+      const tight = pickMnDliCompany(target, found.rows, {
+        minTrigram: MN_NAME_TRIGRAM_THRESHOLD,
+        allowSubstring: false,
+      });
+      if (tight) {
+        biz = tight.item;
+        matchMethod = tight.method;
+        matchScore = tight.score;
+        if (biz && !isIssued(biz)) {
+          return { people: [], coverage_reason: 'inactive_license', source: 'mn_dli', source_url: sourceUrl, match_method: matchMethod, match_score: matchScore };
+        }
+      } else {
+        return { people: [], coverage_reason: 'name_miss', source: 'mn_dli', source_url: sourceUrl };
+      }
+    } else {
+      return { people: [], coverage_reason: index.rows ? 'name_miss' : 'not_found', source: 'mn_dli', source_url: sourceUrl };
     }
   }
 
   if (!biz && !licensePerson) {
-    const loose = target
-      ? pickMnDliCompany(target, businesses, { minTrigram: 0.48, allowSubstring: true })
-      : null;
-    if (loose) {
-      return {
-        people: [],
-        coverage_reason: 'name_miss',
-        source: 'mn_dli',
-        source_url: sourceUrl,
-        match_method: loose.method,
-        match_score: loose.score,
-      };
-    }
-    return { people: [], coverage_reason: 'not_found', source: 'mn_dli', source_url: sourceUrl };
+    return { people: [], coverage_reason: index.rows ? 'name_miss' : 'not_found', source: 'mn_dli', source_url: sourceUrl };
   }
 
-  const qualifier = licensePerson || (biz ? qualifierForBusiness(biz, peopleRows) : null);
+  const qualifier = licensePerson || (biz ? qualifierForBusiness(index, biz) : null);
   const phone = (qualifier?.Phone_No || biz?.Phone_No || '').trim() || null;
   const extra = { match_method: matchMethod, match_score: matchScore };
 
@@ -252,6 +387,18 @@ export function parseMnDliCsv(
     };
   }
   return { people: [], coverage_reason: 'not_found', source: 'mn_dli', source_url: sourceUrl };
+}
+
+/** Nightly DLI dump. Take a person only when the DLI company matches the permit (tight name) or exact license number. */
+export function parseMnDliCsv(
+  text: string,
+  companyName: string,
+  sourceUrl: string,
+  licenseNumber?: string | null,
+): ResolverResult {
+  const index = emptyIndex();
+  ingestMnCsv(index, text);
+  return lookupMnIndex(index, companyName, sourceUrl, licenseNumber);
 }
 
 export function parseMnDliText(text: string, sourceUrl: string): ResolverResult {
@@ -283,7 +430,7 @@ export function parseMnDliText(text: string, sourceUrl: string): ResolverResult 
   return { people: [person], coverage_reason: null, source: 'mn_dli', source_url: sourceUrl };
 }
 
-let csvMemo: { fetchedAt: number; text: string } | null = null;
+let csvMemo: { fetchedAt: number; index: MnIndex } | null = null;
 
 export function resetMnCsvMemo(): void {
   csvMemo = null;
@@ -329,10 +476,11 @@ export async function resolveMnDli(
     }
   }
 
-  let csvText = csvMemo && Date.now() - csvMemo.fetchedAt < 6 * 60 * 60 * 1000 ? csvMemo.text : null;
+  let index = csvMemo && Date.now() - csvMemo.fetchedAt < 6 * 60 * 60 * 1000 ? csvMemo.index : null;
   let status = 200;
-  if (!csvText) {
-    const chunks: string[] = [];
+  if (!index) {
+    index = emptyIndex();
+    let ingested = 0;
     for (const url of MN_CSVS) {
       const got = await client.get(url, { headers: { Accept: '*/*' } });
       status = got.status;
@@ -348,17 +496,17 @@ export async function resolveMnDli(
         };
       }
       if (got.status !== 200) continue;
-      chunks.push(chunks.length ? got.body.replace(/^[^\n]+\n/, '') : got.body);
+      ingestMnCsv(index, got.body);
+      ingested += 1;
     }
-    if (!chunks.length) {
+    if (!ingested || !index.rows) {
       await writeBoardCache({ board: 'mn_dli', cache_key: key, http_status: status, body: '' });
       return { people: [], coverage_reason: 'not_found', source: 'mn_dli', source_url: RESIDENTIAL, http_status: status };
     }
-    csvText = chunks.join('\n');
-    csvMemo = { fetchedAt: Date.now(), text: csvText };
+    csvMemo = { fetchedAt: Date.now(), index };
   }
 
-  const parsed = parseMnDliCsv(csvText, lead.company_name, RESIDENTIAL, lead.license_number);
+  const parsed = lookupMnIndex(index, lead.company_name, RESIDENTIAL, lead.license_number);
   await writeBoardCache({
     board: 'mn_dli',
     cache_key: key,

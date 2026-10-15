@@ -36,7 +36,7 @@ import { parseNycDobJson } from './nycDob.js';
 import { parseWaLniJson, parseWaLniText } from './waLni.js';
 import { parseTxTdlrJson, parseTxTdlrText } from './txTdlr.js';
 import { hasRealMaResult, parseMaCslText } from './maCsl.js';
-import { parseMnDliCsv, parseMnDliText } from './mnDli.js';
+import { createMnIndex, ingestMnCsv, lookupMnIndex, parseMnDliCsv, parseMnDliText } from './mnDli.js';
 import { parsePaHicText } from './paHic.js';
 import { sampleOwnerRows } from './types.js';
 import { readFileSync } from 'node:fs';
@@ -505,6 +505,26 @@ describe('other board parsers', () => {
     assert.equal(similar.coverage_reason, 'name_miss');
     assert.equal(substring.people.length, 0);
     assert.equal(substring.coverage_reason, 'name_miss');
+  });
+
+  it('reuses one MN index for license and name lookups without re-parsing', () => {
+    const csv = [
+      'Bus_Pers,License_Type,License_Subtype,Name,DBA_Name,Addr1,Addr2,City,St,Zip,Phone_No,Email_Address,Lic_Number,Status,Orig_Date,Exp_Date,Enforcement_Action,Renewal_in_Progress',
+      'Business,Residential Contractors,Residential Building Contractor,ACME BUILDERS LLC,,100 MAIN ST,,ST PAUL,MN,55101,6515550100,,BC000111,Issued,,,,',
+      'Personal,Residential Contractors,Qualifying Builder,"JONES, PAT",,100 MAIN ST,,ST PAUL,MN,55101,6515550100,,QB000111,Issued,,,,',
+      'Business,Residential Contractors,Residential Building Contractor,ZETA ROOFING LLC,,200 OAK ST,,MINNEAPOLIS,MN,55401,6125559999,,BC000222,Issued,,,,',
+    ].join('\n');
+    const index = createMnIndex();
+    ingestMnCsv(index, csv);
+    const byName = lookupMnIndex(index, 'Acme Builders LLC', 'u');
+    const byLic = lookupMnIndex(index, 'Unrelated Ventures LLC', 'u', 'BC-000111');
+    const miss = lookupMnIndex(index, 'Other Builders LLC', 'u');
+    assert.equal(index.rows, 3);
+    assert.equal(byName.people.length, 1);
+    assert.equal(byName.match_method, 'exact');
+    assert.equal(byLic.people.length, 1);
+    assert.equal(byLic.match_method, 'license');
+    assert.equal(miss.coverage_reason, 'name_miss');
   });
 });
 
