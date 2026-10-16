@@ -2,14 +2,19 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ShovelsApiContractor, ShovelsGeo } from '../lib/shovels.js';
 import { classifyProbeCoverage, isCountyQueryEmpty } from '../lib/shovels.js';
+import { PermitstackHttpError } from '../lib/permitstack.js';
 import {
   applyContactFilters,
   applyStructuralFilters,
   classifyCallingListCoverage,
   collectCallingListWindow,
   contactFilterYield,
+  hydrateBatchWith429Backoff,
+  isHydrateRateLimit,
   pageSkipForOffset,
   recordOffsetFromJob,
+  shovelsHydrateConcurrency,
+  splitHydrateBatches,
   splitSeenContractors,
   startCursorForGeo,
 } from './pullShovelsCallingList.js';
@@ -555,6 +560,158 @@ describe('collectCallingListWindow', () => {
     });
     assert.equal(got.county_empty, true);
     assert.equal(got.survivors.length, 0);
+  });
+
+  it('with 1 hydrate lane, survivors match a single sequential batch', async () => {
+    const universe = Array.from({ length: 8 }, (_, i) => `s${i}`);
+    const hydrate = async (items: ShovelsApiContractor[], { max } = { max: items.length }) => {
+      const batch = items.slice(0, max ?? items.length);
+      return {
+        items: batch.map((c) => ({ ...c, phone: '7135550100' })),
+        attempted: batch.length,
+        hydrated_ok: batch.length,
+        hydrated_rate_limited: 0,
+        hydrated_failed: 0,
+        hydrated_skipped_synthetic_id: 0,
+        requests: batch.length,
+        http_attempts: batch.length,
+        rate_limited: false,
+      };
+    };
+    const one = await collectCallingListWindow({
+      geo: houstonGeo(),
+      place: 'Houston',
+      permit_from: '2025-01-01',
+      permit_to: '2026-01-01',
+      page_size: 100,
+      max_records: 8,
+      max_requests: 8,
+      start_cursor: null,
+      first_page_skip: 0,
+      start_offset: 0,
+      resumed: false,
+      seen: new Set(),
+      filters: { has_phone: true },
+      fetchPage: pageFetch(universe, 100, 8),
+      hydrateProfiles: hydrate,
+      hydrateConcurrency: 1,
+    });
+    const two = await collectCallingListWindow({
+      geo: houstonGeo(),
+      place: 'Houston',
+      permit_from: '2025-01-01',
+      permit_to: '2026-01-01',
+      page_size: 100,
+      max_records: 8,
+      max_requests: 8,
+      start_cursor: null,
+      first_page_skip: 0,
+      start_offset: 0,
+      resumed: false,
+      seen: new Set(),
+      filters: { has_phone: true },
+      fetchPage: pageFetch(universe, 100, 8),
+      hydrateProfiles: hydrate,
+      hydrateConcurrency: 2,
+    });
+    assert.deepEqual(
+      one.survivors.map((c) => c.id),
+      two.survivors.map((c) => c.id),
+    );
+    assert.equal(one.hydration.requests, 8);
+    assert.equal(two.hydration.requests, 8);
+  });
+
+  it('runs SHOVELS_HYDRATE_CONCURRENCY batches at a time', async () => {
+    const universe = Array.from({ length: 6 }, (_, i) => `p${i}`);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const got = await collectCallingListWindow({
+      geo: houstonGeo(),
+      place: 'Houston',
+      permit_from: '2025-01-01',
+      permit_to: '2026-01-01',
+      page_size: 100,
+      max_records: 6,
+      max_requests: 6,
+      start_cursor: null,
+      first_page_skip: 0,
+      start_offset: 0,
+      resumed: false,
+      seen: new Set(),
+      filters: { has_phone: true },
+      fetchPage: pageFetch(universe, 100, 6),
+      hydrateConcurrency: 2,
+      hydrateProfiles: async (items, { max } = {}) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 20));
+        inFlight -= 1;
+        const batch = items.slice(0, max ?? items.length);
+        return {
+          items: batch.map((c) => ({ ...c, phone: '7135550100' })),
+          attempted: batch.length,
+          hydrated_ok: batch.length,
+          hydrated_rate_limited: 0,
+          hydrated_failed: 0,
+          hydrated_skipped_synthetic_id: 0,
+          requests: batch.length,
+          http_attempts: batch.length,
+          rate_limited: false,
+        };
+      },
+    });
+    assert.equal(got.survivors.length, 6);
+    assert.equal(maxInFlight, 2);
+  });
+});
+
+describe('hydrate concurrency helpers', () => {
+  it('defaults to 2 and caps at 10', () => {
+    assert.equal(shovelsHydrateConcurrency(undefined), 2);
+    assert.equal(shovelsHydrateConcurrency(''), 2);
+    assert.equal(shovelsHydrateConcurrency('0'), 2);
+    assert.equal(shovelsHydrateConcurrency('1'), 1);
+    assert.equal(shovelsHydrateConcurrency('99'), 10);
+  });
+
+  it('splits a slice into contiguous batches', () => {
+    assert.deepEqual(splitHydrateBatches(['a', 'b', 'c', 'd'], 2), [
+      ['a', 'b'],
+      ['c', 'd'],
+    ]);
+    assert.deepEqual(splitHydrateBatches(['a', 'b', 'c', 'd', 'e'], 2), [['a', 'b', 'c'], ['d', 'e']]);
+    assert.deepEqual(splitHydrateBatches(['a'], 6), [['a']]);
+    assert.deepEqual(splitHydrateBatches([], 2), []);
+  });
+
+  it('backs off on thrown 429s and then succeeds', async () => {
+    assert.equal(isHydrateRateLimit(new PermitstackHttpError(429, '/v1/contractors/x', 'rate', 1)), true);
+    assert.equal(isHydrateRateLimit(new PermitstackHttpError(403, '/v1/contractors/x', 'plan')), false);
+    const delays: number[] = [];
+    let calls = 0;
+    const result = await hydrateBatchWith429Backoff(
+      async (items) => {
+        calls += 1;
+        if (calls < 3) throw new PermitstackHttpError(429, '/v1/contractors/x', 'rate', 0);
+        return {
+          items: items.map((c) => ({ ...c, phone: '7135550100' })),
+          attempted: items.length,
+          hydrated_ok: items.length,
+          hydrated_rate_limited: 0,
+          hydrated_failed: 0,
+          hydrated_skipped_synthetic_id: 0,
+          requests: items.length,
+          http_attempts: items.length,
+          rate_limited: false,
+        };
+      },
+      [row('a')],
+      { sleep: async (ms) => delays.push(ms), attempts: 4, baseDelayMs: 10 },
+    );
+    assert.equal(calls, 3);
+    assert.deepEqual(delays, [10, 20]);
+    assert.equal(result.hydrated_ok, 1);
   });
 });
 
