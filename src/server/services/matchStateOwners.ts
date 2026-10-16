@@ -1,4 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import {
+  createLimiter,
+  mapPool,
+  SUPABASE_WRITE_CONCURRENCY,
+} from '../lib/retry.js';
 import { getSupabase, hasSupabase, ingestSecret } from '../lib/supabase.js';
 import { supabaseTargetMeta } from '../lib/supabaseTarget.js';
 import {
@@ -14,6 +19,7 @@ import {
   resolvePaDos,
   resolveTexas,
   sampleOwnerRows,
+  sourceForState,
   normalizeState,
   STATE_RESOLVERS,
   type BoardSource,
@@ -21,6 +27,7 @@ import {
   type OwnerLead,
   type OwnerPerson,
   type ResolverResult,
+  type SampleOwnerRow,
   type StateCode,
 } from '../lib/stateOwners/index.js';
 
@@ -37,10 +44,56 @@ export type StateOwnerTool =
 const DEFAULT_ROWS = 25;
 const DRY_RUN_CAP = 100;
 const LIVE_CAP = 100;
+const DEFAULT_BOARD_LANES = 6;
+const MAX_BOARD_LANES = 10;
+
+export type StoppedBoard = { source: BoardSource; status: number; consecutive: number };
 
 export function clampOwnerRows(maxRows: number | undefined, dryRun: boolean): number {
   const cap = dryRun ? DRY_RUN_CAP : LIVE_CAP;
   return Math.min(Math.max(maxRows ?? DEFAULT_ROWS, 1), cap);
+}
+
+/** BOARD_LANES: default 6, minimum 1, cap 10. Invalid values fall back to 6. */
+export function boardLaneCount(raw: string | undefined = process.env.BOARD_LANES): number {
+  if (raw == null || raw.trim() === '') return DEFAULT_BOARD_LANES;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_BOARD_LANES;
+  return Math.min(MAX_BOARD_LANES, Math.floor(n));
+}
+
+export function personSeenKey(lead: OwnerLead, fullName: string): string {
+  const id = lead.contractor_id || String(lead.lead_id);
+  return `${id}|${personKey(fullName)}`;
+}
+
+/** Claim a dedup key once. Sync so parallel board groups cannot double-write the same person. */
+export function claimSeenKey(seen: Set<string>, key: string): boolean {
+  if (!key || seen.has(key)) return false;
+  seen.add(key);
+  return true;
+}
+
+export interface BoardLeadGroup {
+  source: BoardSource;
+  items: Array<{ lead: OwnerLead; index: number }>;
+}
+
+export function groupLeadsByBoardSource(leads: OwnerLead[]): BoardLeadGroup[] {
+  const groups = new Map<BoardSource, Array<{ lead: OwnerLead; index: number }>>();
+  const order: BoardSource[] = [];
+  for (let i = 0; i < leads.length; i += 1) {
+    const lead = leads[i]!;
+    const source = sourceForState(lead.state || '', lead.city);
+    let items = groups.get(source);
+    if (!items) {
+      items = [];
+      groups.set(source, items);
+      order.push(source);
+    }
+    items.push({ lead, index: i });
+  }
+  return order.map((source) => ({ source, items: groups.get(source)! }));
 }
 
 export interface StateOwnerJobOpts {
@@ -111,10 +164,8 @@ function rankPerson(p: OwnerPerson): number {
 async function persistOwner(lead: OwnerLead, result: ResolverResult, seen: Set<string>): Promise<number> {
   const unique: OwnerPerson[] = [];
   for (const person of result.people) {
-    const id = lead.contractor_id || String(lead.lead_id);
-    const key = `${id}|${personKey(person.full_name_raw)}`;
-    if (!person.full_name_raw || seen.has(key)) continue;
-    seen.add(key);
+    if (!person.full_name_raw) continue;
+    if (!claimSeenKey(seen, personSeenKey(lead, person.full_name_raw))) continue;
     unique.push(person);
   }
   const best = pickPerson(unique);
@@ -199,6 +250,112 @@ function statesForTool(tool: StateOwnerTool, requested?: string[]): string[] | n
   return requested.map(normalizeState).filter((s) => (STATE_RESOLVERS as string[]).includes(s));
 }
 
+export interface OwnerMatchLoopOpts {
+  leads: OwnerLead[];
+  resolve: (lead: OwnerLead) => Promise<ResolverResult>;
+  dryRun: boolean;
+  listId: string;
+  lanes?: number;
+  persist?: (lead: OwnerLead, result: ResolverResult, seen: Set<string>) => Promise<number>;
+  writeConcurrency?: number;
+}
+
+export interface OwnerMatchLoopResult {
+  processed: number;
+  named: number;
+  written: number;
+  remaining: number;
+  hit_rate_by_state: Record<string, StateStats>;
+  status_histogram: Record<string, number>;
+  sample: SampleOwnerRow[];
+  stopped: StoppedBoard[];
+  results: ResolverResult[];
+}
+
+function recordMatch(
+  byState: Record<string, StateStats>,
+  statusHistogram: Record<string, number>,
+  lead: OwnerLead,
+  result: ResolverResult,
+): boolean {
+  const st = normalizeState(lead.state);
+  const gotName = result.people.length > 0;
+  bump(byState, st, gotName, result.coverage_reason);
+  const phrase = result.license_status
+    ? result.license_status.replace(/\s+/g, ' ').trim()
+    : `(${result.coverage_reason || 'named_no_status'})`;
+  statusHistogram[phrase] = (statusHistogram[phrase] || 0) + 1;
+  return gotName;
+}
+
+function claimPeople(lead: OwnerLead, result: ResolverResult, seen: Set<string>): void {
+  for (const person of result.people) {
+    if (!person.full_name_raw) continue;
+    claimSeenKey(seen, personSeenKey(lead, person.full_name_raw));
+  }
+}
+
+/**
+ * Group leads by board source, run up to `lanes` groups in parallel, and keep each
+ * group sequential (1.2s paced client + stop-after-3). A BoardJobStopError ends
+ * only that group; other boards keep going. Results are reassembled in lead order.
+ */
+export async function runOwnerMatchLoop(opts: OwnerMatchLoopOpts): Promise<OwnerMatchLoopResult> {
+  const leads = opts.leads;
+  const lanes = Math.max(1, Math.min(MAX_BOARD_LANES, Math.floor(opts.lanes ?? boardLaneCount()) || 1));
+  const persist = opts.persist;
+  const writeGate = createLimiter(opts.writeConcurrency ?? SUPABASE_WRITE_CONCURRENCY);
+  const groups = groupLeadsByBoardSource(leads);
+  const slots: Array<ResolverResult | undefined> = new Array(leads.length);
+  const byState: Record<string, StateStats> = {};
+  const statusHistogram: Record<string, number> = {};
+  const seen = new Set<string>();
+  const stopped: StoppedBoard[] = [];
+  let named = 0;
+  let written = 0;
+
+  await mapPool(groups, lanes, async (group) => {
+    for (const { lead, index } of group.items) {
+      try {
+        const result = await opts.resolve(lead);
+        slots[index] = result;
+        if (recordMatch(byState, statusHistogram, lead, result)) named += 1;
+        if (!opts.dryRun && persist) {
+          const n = await writeGate(() => persist({ ...lead, list_id: opts.listId }, result, seen));
+          written += n;
+        } else {
+          claimPeople(lead, result, seen);
+        }
+      } catch (err) {
+        if (err instanceof BoardJobStopError) {
+          stopped.push({ source: err.source, status: err.status, consecutive: err.consecutive });
+          return;
+        }
+        const blocked: ResolverResult = {
+          people: [],
+          coverage_reason: 'blocked',
+          source: 'cslb',
+        };
+        slots[index] = blocked;
+        bump(byState, normalizeState(lead.state), false, 'blocked');
+      }
+    }
+  });
+
+  const results = slots.filter((row): row is ResolverResult => row != null);
+  return {
+    processed: results.length,
+    named,
+    written: opts.dryRun ? 0 : written,
+    remaining: Math.max(0, leads.length - results.length),
+    hit_rate_by_state: byState,
+    status_histogram: statusHistogram,
+    sample: sampleOwnerRows(results, 10),
+    stopped,
+    results,
+  };
+}
+
 export async function matchStateOwners(opts: StateOwnerJobOpts): Promise<Record<string, unknown>> {
   const tool = opts.tool ?? 'match_state_owners';
   const dryRun = opts.dry_run === true;
@@ -219,63 +376,29 @@ export async function matchStateOwners(opts: StateOwnerJobOpts): Promise<Record<
   }
 
   const resolve = resolverForTool(tool) ?? resolveLeadByState;
-  const byState: Record<string, StateStats> = {};
-  const statusHistogram: Record<string, number> = {};
-  const results: ResolverResult[] = [];
-  const seen = new Set<string>();
-  let named = 0;
-  let written = 0;
-  let stopped: { source: BoardSource; status: number; consecutive: number } | null = null;
-
-  for (const lead of leads) {
-    try {
-      const result = await resolve(lead);
-      results.push(result);
-      const st = normalizeState(lead.state);
-      const gotName = result.people.length > 0;
-      if (gotName) named += 1;
-      bump(byState, st, gotName, result.coverage_reason);
-      const phrase = result.license_status
-        ? result.license_status.replace(/\s+/g, ' ').trim()
-        : `(${result.coverage_reason || 'named_no_status'})`;
-      statusHistogram[phrase] = (statusHistogram[phrase] || 0) + 1;
-      if (!dryRun) {
-        written += await persistOwner({ ...lead, list_id: listId }, result, seen);
-      } else {
-        for (const person of result.people) {
-          const id = lead.contractor_id || String(lead.lead_id);
-          seen.add(`${id}|${personKey(person.full_name_raw)}`);
-        }
-      }
-    } catch (err) {
-      if (err instanceof BoardJobStopError) {
-        stopped = { source: err.source, status: err.status, consecutive: err.consecutive };
-        break;
-      }
-      const st = normalizeState(lead.state);
-      bump(byState, st, false, 'blocked');
-      results.push({
-        people: [],
-        coverage_reason: 'blocked',
-        source: 'cslb',
-      });
-    }
-  }
+  const loop = await runOwnerMatchLoop({
+    leads,
+    resolve,
+    dryRun,
+    listId,
+    lanes: boardLaneCount(),
+    persist: persistOwner,
+  });
 
   return {
-    ok: !stopped,
+    ok: loop.stopped.length === 0,
     job_id: jobId,
     ...supabaseTargetMeta(),
     tool,
     dry_run: dryRun,
-    processed: results.length,
-    named,
-    written: dryRun ? 0 : written,
-    remaining: Math.max(0, leads.length - results.length),
-    hit_rate_by_state: byState,
-    status_histogram: statusHistogram,
-    sample: sampleOwnerRows(results, 10),
-    stopped,
+    processed: loop.processed,
+    named: loop.named,
+    written: dryRun ? 0 : loop.written,
+    remaining: loop.remaining,
+    hit_rate_by_state: loop.hit_rate_by_state,
+    status_histogram: loop.status_histogram,
+    sample: loop.sample,
+    stopped: loop.stopped,
     assistant_instructions: dryRun
       ? 'Dry run only. Counts and coverage reasons. No names. Re-run dry_run=false to write officer names for Email Finder name_company mode.'
       : 'Wrote owner names to contact_enrichment. Counts only — do not dump the list. Feed owner_search_name into Email Finder Waterfall name_company mode.',

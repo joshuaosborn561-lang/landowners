@@ -5,10 +5,12 @@ import {
   EMPTY_HYDRATION,
   hydratePermitstackProfiles,
   isSyntheticContractorId,
+  PermitstackHttpError,
   permitstackGet,
   resolveSyntheticContractorIds,
   type HydrationCounters,
 } from '../lib/permitstack.js';
+import { mapPool, sleep } from '../lib/retry.js';
 import {
   GeoResolutionError,
   hasShovelsApi,
@@ -31,6 +33,10 @@ import { replaceLeads, upsertExport, upsertJob } from './syncToSupabase.js';
 const DEFAULT_MAX_RECORDS = 1500;
 const HARD_MAX_RECORDS = 8000;
 const HARD_MAX_REQUESTS = 8000;
+const DEFAULT_HYDRATE_CONCURRENCY = 2;
+const MAX_HYDRATE_CONCURRENCY = 10;
+const HYDRATE_429_ATTEMPTS = 4;
+const HYDRATE_429_BASE_DELAY_MS = 1000;
 
 export interface PullShovelsCallingListInput {
   geos?: string;
@@ -161,6 +167,62 @@ export function contactFilterYield(uniqueAfterFilters: number, hydrateRequests: 
   return uniqueAfterFilters / hydrateRequests;
 }
 
+/** SHOVELS_HYDRATE_CONCURRENCY: default 2, minimum 1, cap 10. */
+export function shovelsHydrateConcurrency(
+  raw: string | undefined = process.env.SHOVELS_HYDRATE_CONCURRENCY,
+): number {
+  if (raw == null || raw.trim() === '') return DEFAULT_HYDRATE_CONCURRENCY;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_HYDRATE_CONCURRENCY;
+  return Math.min(MAX_HYDRATE_CONCURRENCY, Math.floor(n));
+}
+
+/** Split a slice into `lanes` contiguous batches (or one per item when smaller). */
+export function splitHydrateBatches<T>(items: T[], lanes: number): T[][] {
+  if (!items.length) return [];
+  const n = Math.max(1, Math.min(Math.floor(lanes) || 1, items.length));
+  const size = Math.ceil(items.length / n);
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    batches.push(items.slice(i, i + size));
+  }
+  return batches;
+}
+
+export function isHydrateRateLimit(err: unknown): boolean {
+  if (err instanceof PermitstackHttpError && err.status === 429) return true;
+  if (err && typeof err === 'object' && 'status' in err && Number((err as { status: unknown }).status) === 429) {
+    return true;
+  }
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  return /\b429\b/.test(msg);
+}
+
+export async function hydrateBatchWith429Backoff(
+  hydrateFn: typeof hydratePermitstackProfiles,
+  batch: Parameters<typeof hydratePermitstackProfiles>[0],
+  opts: {
+    sleep?: (ms: number) => Promise<void>;
+    attempts?: number;
+    baseDelayMs?: number;
+  } = {},
+): Promise<Awaited<ReturnType<typeof hydratePermitstackProfiles>>> {
+  const sleepFn = opts.sleep ?? sleep;
+  const attempts = opts.attempts ?? HYDRATE_429_ATTEMPTS;
+  const baseDelayMs = opts.baseDelayMs ?? HYDRATE_429_BASE_DELAY_MS;
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await hydrateFn(batch, { max: batch.length });
+    } catch (err) {
+      lastErr = err;
+      if (!isHydrateRateLimit(err) || i === attempts - 1) throw err;
+      await sleepFn(baseDelayMs * 2 ** i);
+    }
+  }
+  throw lastErr;
+}
+
 function addHydration(a: HydrationCounters, b: HydrationCounters): HydrationCounters {
   return {
     attempted: a.attempted + b.attempted,
@@ -213,6 +275,8 @@ export async function collectCallingListWindow(opts: {
   filters: PullShovelsCallingListInput;
   fetchPage?: typeof shovelsSearchContractorsPage;
   hydrateProfiles?: typeof hydratePermitstackProfiles;
+  sleep?: (ms: number) => Promise<void>;
+  hydrateConcurrency?: number;
 }): Promise<CallingListWindowResult> {
   const survivors: ShovelsApiContractor[] = [];
   let cursor = opts.start_cursor;
@@ -229,6 +293,11 @@ export async function collectCallingListWindow(opts: {
   let first = true;
   let zipCannotHydrate = false;
   const hydrateFn = opts.hydrateProfiles ?? hydratePermitstackProfiles;
+  const sleepFn = opts.sleep ?? sleep;
+  const hydrateLanes = Math.max(
+    1,
+    Math.min(MAX_HYDRATE_CONCURRENCY, Math.floor(opts.hydrateConcurrency ?? shovelsHydrateConcurrency()) || 1),
+  );
   const wantPhone = opts.filters.has_phone === true;
 
   while (survivors.length < opts.max_records) {
@@ -325,25 +394,41 @@ export async function collectCallingListWindow(opts: {
       while (queue.length && survivors.length < opts.max_records && hydration.requests < opts.max_requests) {
         const roomHydrations = opts.max_requests - hydration.requests;
         const roomSurvivors = opts.max_records - survivors.length;
-        const batch = queue.slice(0, Math.min(roomHydrations, roomSurvivors, queue.length));
-        queue = queue.slice(batch.length);
-        const hydrated = await hydrateFn(batch, { max: batch.length });
-        hydration = addHydration(hydration, {
-          attempted: hydrated.attempted,
-          hydrated_ok: hydrated.hydrated_ok,
-          hydrated_rate_limited: hydrated.hydrated_rate_limited,
-          hydrated_failed: hydrated.hydrated_failed,
-          hydrated_skipped_synthetic_id: hydrated.hydrated_skipped_synthetic_id,
-          requests: hydrated.requests,
-          http_attempts: hydrated.http_attempts,
-          rate_limited: hydrated.rate_limited,
-        });
-        credits += hydrated.requests;
-        for (const item of hydrated.items) opts.seen.add(item.id);
-        const passed = applyContactFilters(hydrated.items, opts.filters);
-        for (const item of passed) {
-          if (survivors.length >= opts.max_records) break;
-          survivors.push(item);
+        const take = Math.min(roomHydrations, roomSurvivors, queue.length);
+        const slice = queue.slice(0, take);
+        queue = queue.slice(take);
+        const batches = splitHydrateBatches(slice, hydrateLanes);
+        const hydratedBatches = await mapPool(batches, hydrateLanes, (batch) =>
+          hydrateBatchWith429Backoff(hydrateFn, batch, { sleep: sleepFn }),
+        );
+        let waveRateLimited = false;
+        for (const hydrated of hydratedBatches) {
+          hydration = addHydration(hydration, {
+            attempted: hydrated.attempted,
+            hydrated_ok: hydrated.hydrated_ok,
+            hydrated_rate_limited: hydrated.hydrated_rate_limited,
+            hydrated_failed: hydrated.hydrated_failed,
+            hydrated_skipped_synthetic_id: hydrated.hydrated_skipped_synthetic_id,
+            requests: hydrated.requests,
+            http_attempts: hydrated.http_attempts,
+            rate_limited: hydrated.rate_limited,
+          });
+          credits += hydrated.requests;
+          for (const item of hydrated.items) opts.seen.add(item.id);
+          const passed = applyContactFilters(hydrated.items, opts.filters);
+          for (const item of passed) {
+            if (survivors.length >= opts.max_records) break;
+            survivors.push(item);
+          }
+          if (hydrated.rate_limited) waveRateLimited = true;
+        }
+        if (
+          waveRateLimited &&
+          queue.length &&
+          survivors.length < opts.max_records &&
+          hydration.requests < opts.max_requests
+        ) {
+          await sleepFn(HYDRATE_429_BASE_DELAY_MS);
         }
       }
       if (queue.length) {
