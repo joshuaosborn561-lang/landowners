@@ -1,6 +1,8 @@
 /** Starter-plan mid-point from PLAN.md (compute + residential, media off). */
 export const APIFY_USD_PER_BLOCKED_LOOKUP = 0.015;
 export const APIFY_USD_PER_COMPUTE_UNIT = 0.2;
+/** CA search + SI may each need Playwright when Incapsula blocks datacenter IPs. */
+export const CA_APIFY_LOOKUPS_PER_ROW = 1.5;
 
 export class ApifySpendTracker {
   usd = 0;

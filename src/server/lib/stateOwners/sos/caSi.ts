@@ -4,10 +4,9 @@ import { ctxFetch } from './context.js';
 import { apifyFetchHtml } from './apifyPlaywright.js';
 import { textFromDocument } from './ocr.js';
 import { parseOfficerRoster, type RosterEntry } from './officers.js';
-import type { CaBizfileEntity } from './caBizfile.js';
+import { CA_BIZFILE_ONLINE_SEARCH, CA_BIZFILE_ONLINE_UI, type CaBizfileEntity } from './caBizfile.js';
 
-export const CA_BIZFILE_ONLINE_SEARCH = 'https://bizfileonline.sos.ca.gov/api/Records/businessSearch';
-export const CA_BIZFILE_ONLINE_UI = 'https://bizfileonline.sos.ca.gov/search/business';
+export { CA_BIZFILE_ONLINE_SEARCH, CA_BIZFILE_ONLINE_UI };
 
 export function caSiImageUrls(entityId: string): string[] {
   const id = encodeURIComponent(entityId.trim());

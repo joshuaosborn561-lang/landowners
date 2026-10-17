@@ -6,12 +6,11 @@ import { catalogByCode } from './catalog.js';
 import {
   caBizfileSourceUrl,
   matchCaBizfileFromPayload,
-  searchCaBizfileKeyword,
+  searchCaBizfileOnline,
   type CaBizfileEntity,
 } from './caBizfile.js';
 import { fetchCaStatementOfficers } from './caSi.js';
 import type { LookupContext } from './context.js';
-import { caSosApiKeyFromEnv } from './context.js';
 import { getIlIndex, matchIlDta, IL_DTA_HOME } from './ilDta.js';
 import { resolveHtmlOfficerState } from './htmlStates.js';
 import { resolveColoradoAgentOnly, resolveOhioAgentOnly } from './agentStates.js';
@@ -58,22 +57,29 @@ function withSpend(result: NameLookupResult, usd: number, via: boolean, ocr?: bo
 }
 
 async function resolveCalifornia(input: NameLookupInput, ctx?: LookupContext): Promise<NameLookupResult> {
-  const apiKey = ctx?.caApiKey ?? caSosApiKeyFromEnv();
   let payload = ctx?.caPayload;
-  if (payload == null && ctx?.live && apiKey) {
-    const got = await searchCaBizfileKeyword(input.company_name, apiKey, ctx);
-    if (got.status === 401 || got.status === 403 || got.status === 503) {
-      return emptyNameResult(input, 'missing_key', 'ca_bizfile', {
+  let searchUsd = 0;
+  let searchViaApify = false;
+  if (payload == null) {
+    const got = await searchCaBizfileOnline(input.company_name, ctx);
+    searchUsd = got.usd;
+    searchViaApify = got.via_apify;
+    payload = got.payload;
+    if (got.blocked && payload == null) {
+      return emptyNameResult(input, 'blocked', 'ca_bizfile', {
         implemented: true,
         source_url: caBizfileSourceUrl(null),
+        via_apify: searchViaApify,
+        apify_usd: searchUsd,
       });
     }
-    payload = got.payload;
   }
   if (payload == null) {
-    return emptyNameResult(input, apiKey && !ctx?.live ? 'not_found' : 'missing_key', 'ca_bizfile', {
+    return emptyNameResult(input, 'not_found', 'ca_bizfile', {
       implemented: true,
       source_url: caBizfileSourceUrl(null),
+      via_apify: searchViaApify,
+      apify_usd: searchUsd,
     });
   }
 
@@ -82,12 +88,16 @@ async function resolveCalifornia(input: NameLookupInput, ctx?: LookupContext): P
     return emptyNameResult(input, 'not_found', 'ca_bizfile', {
       implemented: true,
       source_url: matched.source_url,
+      via_apify: searchViaApify,
+      apify_usd: searchUsd,
     });
   }
 
   const entity: CaBizfileEntity = matched.entity;
   const si = await fetchCaStatementOfficers(entity, ctx);
   const officers = hitsFromRoster(input, si.entries, 'ca_bizfile', si.source_url || matched.source_url, matched.match_method);
+  const viaApify = searchViaApify || si.via_apify;
+  const usd = Number((searchUsd + (si.usd || 0)).toFixed(4));
   if (officers.length) {
     return withSpend(
       {
@@ -101,11 +111,11 @@ async function resolveCalifornia(input: NameLookupInput, ctx?: LookupContext): P
         business_name: entity.EntityName || null,
         implemented: true,
         ocr_used: si.ocr_used,
-        via_apify: si.via_apify,
-        apify_usd: si.usd,
+        via_apify: viaApify,
+        apify_usd: usd,
       },
       0,
-      si.via_apify,
+      viaApify,
       si.ocr_used,
     );
   }
@@ -126,11 +136,11 @@ async function resolveCalifornia(input: NameLookupInput, ctx?: LookupContext): P
       business_name: entity.EntityName || null,
       implemented: true,
       ocr_used: si.ocr_used,
-      via_apify: si.via_apify,
-      apify_usd: si.usd,
+      via_apify: viaApify,
+      apify_usd: usd,
     },
     0,
-    si.via_apify,
+    viaApify,
     si.ocr_used,
   );
 }

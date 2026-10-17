@@ -1,4 +1,3 @@
-import { config } from '../../../config.js';
 import { getBoardFetch, type FetchLike } from '../http.js';
 import type { NameLookupInput } from './types.js';
 import { ApifySpendTracker } from './spend.js';
@@ -10,7 +9,6 @@ export interface LookupContext {
   /** When true, adapters may call official HTTP / Apify. Tests leave this false. */
   live?: boolean;
   fetch?: FetchLike;
-  caApiKey?: string | null;
   apifyToken?: string | null;
   apifyEnabled?: boolean;
   ilDtaDir?: string | null;
@@ -33,15 +31,6 @@ export interface LookupContext {
   apifyFetchHtml?: (url: string) => Promise<{ html: string; usd: number }>;
 }
 
-export function caSosApiKeyFromEnv(): string | null {
-  const keys = ['CA_SOS_API_KEY', 'CA_BIZFILE_API_KEY', 'ca_sos_api_key', 'ca_bizfile_api_key'] as const;
-  for (const name of keys) {
-    const v = process.env[name]?.trim();
-    if (v) return v;
-  }
-  return config.caBizfileApiKey?.trim() || null;
-}
-
 export function apifyTokenFromEnv(): string | null {
   for (const name of ['APIFY_TOKEN', 'APIFY_API_TOKEN', 'apify_token'] as const) {
     const v = process.env[name]?.trim();
@@ -58,7 +47,6 @@ export function defaultLookupContext(overrides: LookupContext = {}): LookupConte
   return {
     live: true,
     fetch: getBoardFetch(),
-    caApiKey: caSosApiKeyFromEnv(),
     apifyToken: apifyTokenFromEnv(),
     apifyEnabled: overrides.apifyEnabled ?? true,
     ilDtaDir: ilDtaDirFromEnv(),

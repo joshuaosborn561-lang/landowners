@@ -16,7 +16,7 @@ import {
 } from '../lib/stateOwners/sos/index.js';
 import { defaultLookupContext } from '../lib/stateOwners/sos/context.js';
 import { mapPool } from '../lib/stateOwners/sos/pool.js';
-import { APIFY_USD_PER_BLOCKED_LOOKUP } from '../lib/stateOwners/sos/spend.js';
+import { APIFY_USD_PER_BLOCKED_LOOKUP, CA_APIFY_LOOKUPS_PER_ROW } from '../lib/stateOwners/sos/spend.js';
 import { isWaterfallReady } from '../lib/stateOwners/sos/waterfall.js';
 
 export { APIFY_USD_PER_BLOCKED_LOOKUP };
@@ -57,9 +57,12 @@ export function estimateApifyUsd(inputs: NameLookupInput[]): number {
   const catalog = catalogByCode();
   let blocked = 0;
   for (const row of inputs) {
-    const entry = catalog.get(normalizeState(row.state));
+    const st = normalizeState(row.state);
+    const entry = catalog.get(st);
     if (!entry) continue;
-    if (entry.apify === 'fallback' && ownerYieldPossible(entry.officers)) blocked += 1;
+    if (entry.apify === 'fallback' && ownerYieldPossible(entry.officers)) {
+      blocked += st === 'CA' ? CA_APIFY_LOOKUPS_PER_ROW : 1;
+    }
   }
   return Number((blocked * APIFY_USD_PER_BLOCKED_LOOKUP).toFixed(2));
 }
@@ -83,12 +86,15 @@ export function firstUseEnvelope(): Record<string, unknown> {
     supabase_project: 'azpapwtnrbzywlnxxecz',
     http_lanes: SOS_HTTP_LANES,
     write_concurrency: OWNER_LOOKUP_WRITE_CONCURRENCY,
-    ca_api_usd: 0,
-    ca_si_unchallenged_usd: 0,
-    ca_si_apify_mid_usd: Number((ca * APIFY_USD_PER_BLOCKED_LOOKUP).toFixed(2)),
+    ca_bizfile_api: 'unavailable_government_agencies_only',
+    ca_direct_http_usd: 0,
+    ca_apify_mid_usd: Number((ca * APIFY_USD_PER_BLOCKED_LOOKUP * CA_APIFY_LOOKUPS_PER_ROW).toFixed(2)),
+    ca_apify_lookups_per_row: CA_APIFY_LOOKUPS_PER_ROW,
     other_apify_mid_if_all_blocked_usd: Number((other * APIFY_USD_PER_BLOCKED_LOOKUP).toFixed(2)),
-    runtime_seconds_ca_api_only: estimateRuntimeSeconds(ca),
+    runtime_seconds_ca_direct: estimateRuntimeSeconds(ca),
     apify_usd_per_blocked_lookup: APIFY_USD_PER_BLOCKED_LOOKUP,
+    ca_note:
+      'calicodev/calico developer API is government-agencies-only. Public bizfileOnline + SI; Apify Playwright + residential when Incapsula/Imperva blocks datacenter IPs.',
   };
 }
 
@@ -214,13 +220,13 @@ export async function lookupBusinessOwner(opts: LookupBusinessOwnerOpts): Promis
       first_use: firstUseEnvelope(),
       writes_enabled: WRITES_ENABLED,
       josh_signup: [
-        'California SOS BizFile API key (free) at https://calicodev.sos.ca.gov — env CA_SOS_API_KEY (legacy CA_BIZFILE_API_KEY still accepted)',
+        'Do not sign up at calicodev.sos.ca.gov — the developer API is government-agencies-only',
+        'Confirm Apify CU + residential GB (bizfileOnline Incapsula/Imperva blocks datacenter IPs; APIFY_TOKEN)',
         'Optional: CA weekly bulk if it includes Statement of Information officers',
         'Illinois Data Transparency Act Annual Report files (free; set IL_DTA_DIR; do not scrape the search UI)',
-        'Confirm Apify CU + residential GB on the existing account (APIFY_TOKEN)',
       ],
       assistant_instructions:
-        'Phase 2 estimate only. No SOS calls. No writes. Do not dump company names. Show counts, $ envelope, and missing keys.',
+        'Phase 2 estimate only. No SOS calls. No writes. Do not dump company names. Show counts, $ envelope, and Apify vs IL-file setup. CA has no API key (calicodev is government-only).',
     };
   }
 

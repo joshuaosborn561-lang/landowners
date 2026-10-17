@@ -47,7 +47,11 @@ async function apifyJson(url: string, init: RequestInit, fetchFn: typeof fetch):
  * Official-page HTML via apify/playwright-scraper + residential proxy.
  * Never paid Store officer datasets.
  */
-export async function apifyFetchHtml(url: string, ctx?: LookupContext): Promise<ApifyHtmlResult> {
+export async function apifyFetchHtml(
+  url: string,
+  ctx?: LookupContext,
+  opts?: { pageFunction?: string },
+): Promise<ApifyHtmlResult> {
   if (ctx?.apifyFetchHtml) {
     const got = await ctx.apifyFetchHtml(url);
     ctxSpend(ctx).add(got.usd);
@@ -65,7 +69,7 @@ export async function apifyFetchHtml(url: string, ctx?: LookupContext): Promise<
     keepUrlFragments: false,
     linkSelector: '',
     globs: [],
-    pageFunction: PAGE_FUNCTION,
+    pageFunction: opts?.pageFunction || PAGE_FUNCTION,
     proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] },
     proxyRotation: 'RECOMMENDED',
     maxConcurrency: 2,

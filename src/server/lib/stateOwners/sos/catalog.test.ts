@@ -21,7 +21,9 @@ describe('STATE_SOS_CATALOG', () => {
     const order = catalogInRolloutOrder().map((r) => r.code);
     assert.deepEqual(order.slice(0, PRIORITY_CODES.length), [...PRIORITY_CODES]);
     const byCode = catalogByCode();
-    assert.equal(byCode.get('CA')?.access, 'api_key');
+    assert.equal(byCode.get('CA')?.access, 'html');
+    assert.equal(byCode.get('CA')?.apify, 'fallback');
+    assert.match(byCode.get('CA')?.search_url || '', /bizfileonline\.sos\.ca\.gov/);
     assert.equal(byCode.get('CA')?.officers, 'filings_pdf');
     assert.equal(byCode.get('IL')?.apify, 'never');
     assert.equal(byCode.get('IL')?.access, 'bulk_file');

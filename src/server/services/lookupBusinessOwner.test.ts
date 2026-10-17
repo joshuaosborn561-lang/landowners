@@ -19,9 +19,16 @@ describe('lookup_business_owner scaffold', () => {
     assert.equal(PHASE1_WRITES_ENABLED, false);
     assert.equal(WRITES_ENABLED, false);
     assert.equal(out.phase, 2);
-    const first = out.first_use as { assumed_total: number; ca_api_usd: number };
+    const first = out.first_use as {
+      assumed_total: number;
+      ca_direct_http_usd: number;
+      ca_bizfile_api: string;
+      ca_apify_mid_usd: number;
+    };
     assert.equal(first.assumed_total, 15359);
-    assert.equal(first.ca_api_usd, 0);
+    assert.equal(first.ca_direct_http_usd, 0);
+    assert.equal(first.ca_bizfile_api, 'unavailable_government_agencies_only');
+    assert.ok(first.ca_apify_mid_usd > 100);
     assert.equal(out.apify_estimate_usd, 0);
     assert.ok(APIFY_USD_PER_BLOCKED_LOOKUP > 0);
   });

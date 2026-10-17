@@ -1,7 +1,8 @@
 #!/usr/bin/env tsx
 /**
  * Local name-path probe: CSV in (company, city, state) → results CSV + summary.
- * Does not write to Supabase. Uses env CA_SOS_API_KEY / APIFY_TOKEN / IL_DTA_DIR when present.
+ * Does not write to Supabase. Uses env APIFY_TOKEN / IL_DTA_DIR when present.
+ * CA uses public bizfileOnline (no API key; Apify if Incapsula blocks).
  *
  *   npx tsx scripts/owner_lookup_sample.ts --in sample.csv --out results.csv
  */
@@ -44,7 +45,7 @@ Options:
   --il-dta-dir <path>  Illinois Data Transparency Act files (or env IL_DTA_DIR)
   --live false         Skip official HTTP (fixture/offline)
 
-Env: CA_SOS_API_KEY (or CA_BIZFILE_API_KEY), APIFY_TOKEN, IL_DTA_DIR
+Env: APIFY_TOKEN, IL_DTA_DIR (CA is public bizfileOnline — no API key)
 No Supabase writes. Permit/license path is unchanged (match_state_owners).
 `);
 }

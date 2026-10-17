@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 import { hasPermitLicense, resolveNameLookup } from './namePath.js';
-import { matchCaBizfileFromPayload, parseCaBizfileSearch } from './caBizfile.js';
+import { matchCaBizfileFromPayload, parseCaBizfileSearch, searchCaBizfileOnline } from './caBizfile.js';
 import { pickBestEntityMatch } from './match.js';
 import { isWaterfallReady } from './waterfall.js';
 
@@ -49,14 +49,43 @@ describe('CA BizFile fixture (synthetic)', () => {
     assert.equal(isWaterfallReady(result.people[0]!), false);
   });
 
-  it('returns missing_key for CA when no API key or payload is injected', async () => {
+  it('returns not_found for CA when live search is off and no payload is injected (no API key)', async () => {
     const result = await resolveNameLookup(
       { company_name: 'Sample Builders LLC', city: 'Oakland', state: 'CA' },
       { live: false },
     );
-    assert.equal(result.coverage_reason, 'missing_key');
+    assert.equal(result.coverage_reason, 'not_found');
     assert.equal(result.source, 'ca_bizfile');
     assert.equal(result.implemented, true);
+  });
+
+  it('parses public bizfileOnline search rows and city-tie-breaks', () => {
+    const publicJson = JSON.parse(
+      readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'ca-bizfileonline-search.json'), 'utf8'),
+    );
+    const oakland = matchCaBizfileFromPayload('Sample Builders LLC', 'Oakland', publicJson);
+    assert.equal(oakland.entity?.EntityID, '202399900002');
+    assert.equal(oakland.coverage_reason, 'agent_only');
+  });
+
+  it('falls back to Apify Playwright when Incapsula blocks datacenter HTTP', async () => {
+    const publicJson = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'ca-bizfileonline-search.json'),
+      'utf8',
+    );
+    const got = await searchCaBizfileOnline('Sample Builders LLC', {
+      live: true,
+      fetch: async () =>
+        new Response('<html>Incapsula incident id 1</html>', {
+          status: 403,
+          headers: { 'content-type': 'text/html' },
+        }),
+      apifyFetchHtml: async () => ({ html: publicJson, usd: 0.015 }),
+    });
+    assert.equal(got.via_apify, true);
+    assert.ok((got.usd || 0) > 0);
+    const matched = matchCaBizfileFromPayload('Sample Builders LLC', 'Oakland', got.payload);
+    assert.equal(matched.entity?.EntityID, '202399900002');
   });
 
   it('extracts SI officers after a BizFile entity match', async () => {

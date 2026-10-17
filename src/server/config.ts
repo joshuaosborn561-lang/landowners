@@ -28,9 +28,6 @@ export const config = {
   texasCpaApiKey: env('TEXAS_CPA_API_KEY'),
   // Railway vars are case-sensitive; the live service currently stores this lowercase.
   floridaSosApiKey: env('FLORIDA_SOS_API_KEY') || env('florida_sos_api_key'),
-  /** CA BizFile Public Search API. Prefer CA_SOS_API_KEY; legacy CA_BIZFILE_API_KEY still accepted. */
-  caBizfileApiKey:
-    env('CA_SOS_API_KEY') || env('CA_BIZFILE_API_KEY') || env('ca_sos_api_key') || env('ca_bizfile_api_key'),
 };
 
 export type AppConfig = typeof config;

@@ -132,20 +132,18 @@ Implement adapters in this order. Do not skip ahead to a blocked state while CA 
 - Key: none
 - Anti-bot: some WAF; already handled
 
-### 5.2 BizFile Public Search API (name path — entity match)
+### 5.2 Public bizfileOnline search (name path — entity match)
 
-- Portal: [calicodev.sos.ca.gov](https://calicodev.sos.ca.gov) — Josh **signs up**, confirms email, **Products → subscribe**, header `Ocp-Apim-Subscription-Key`
-- Guide: [BE Public Search API Guide v1.0.4](https://calicodev.sos.ca.gov/content/California%20SOS%20BE%20Public%20Search%20API%20Guide%20v1.0.4.pdf) (21 Sep 2022)
-- Production:
-  - `GET https://calico.sos.ca.gov/cbc/v1/api/BusinessEntityKeywordSearch?search-term=`
-  - `GET https://calico.sos.ca.gov/cbc/v1/api/BusinessEntityDetails?entity-number=`
-- Cost: **free**
-- Rate limit: **not documented**. Keyword search returns the **top 150** matches. Plan 2–4 in-flight requests and back off on 429/503. 503 in the guide means missing/invalid key.
-- Fields (Appendix A): entity id/name/status, jurisdiction, street **and mailing** city/state/ZIP, **AgentName + agent address**, SI frequency, standings. **No officer, director, member, or manager fields.**
-- Anti-bot: UAT samples in the guide show Incapsula on some error pages; the JSON endpoints are the path to prefer over `bizfileonline.sos.ca.gov`.
-- City tie-break: API often leaves `EntityCity` empty; use `MailingCity` / `AgentCity`.
+- **Do not use** [calicodev.sos.ca.gov](https://calicodev.sos.ca.gov) / `calico.sos.ca.gov` Business Entity Search. That developer API is **government-agencies-only**. There is no `CA_SOS_API_KEY` / `CA_BIZFILE_API_KEY` on this path.
+- Public source: [bizfileOnline.sos.ca.gov](https://bizfileonline.sos.ca.gov/search/business)
+  - UI: `https://bizfileonline.sos.ca.gov/search/business`
+  - JSON: `POST https://bizfileonline.sos.ca.gov/api/Records/businessSearch` with `SEARCH_VALUE` + `SEARCH_FILTER_TYPE_ID=search`
+- Cost of the search itself: **free** (official public site). Compute cost is Apify if the WAF blocks us.
+- Fields: entity number/name/status, addresses when present, often **agent**. **Officers are not reliably in the search JSON** — they come from Statement of Information (§5.3).
+- Anti-bot: **Incapsula / Imperva**. Datacenter IPs are blocked. **Direct HTTP first.** If the body is a challenge/403, **Apify Playwright + residential proxy** (`groups-RESIDENTIAL`) so the POST runs same-origin after a browser cookie. Never a paid CA dataset, never Unblocker.
+- City tie-break: use principal / mailing / agent city on the search row.
 
-**Verdict:** the free API is the right **search** tool. It cannot satisfy Email Finder by itself. A hit with only `AgentName` is `agent_only`.
+**Verdict:** public bizfileOnline is the search tool. A hit with only an agent name is `agent_only` until SI officers parse.
 
 ### 5.3 Statement of Information (officers)
 
@@ -153,7 +151,7 @@ Official SOS page: [Business Entities Records Request](https://www.sos.ca.gov/bu
 
 - Returns **officers / managers / at least one member** (not beneficial owners, not shareholders).
 - No API field for this. Phase 2: after entity-number match, fetch the SI image or the HTML entity record that lists officers.
-- `bizfileOnline` is a JS app and is **bot-challenged** in third-party audits. Try official image URLs / session-less document links first. **Apify Playwright + residential proxy only if that blocks.** Never a paid CA dataset. There is a paid “master” bulk product (~$100 in help-guide citations); **do not buy it** while the free API + SI images work.
+- `bizfileOnline` is a JS app behind **Incapsula/Imperva**. Try official image URLs / session-less document links first. **Apify Playwright + residential proxy only if that blocks.** Never a paid CA dataset. There is a paid “master” bulk product (~$100 in help-guide citations); **do not buy it**.
 
 ### 5.4 CA weekly bulk (optional, still official)
 
@@ -340,7 +338,7 @@ Supabase project named for this use: **`azpapwtnrbzywlnxxecz`**. Pool cap **60**
 
 | Resource | Cap in code | Why |
 |----------|-------------|-----|
-| SOS HTTP lanes | 4 (CA API) / 1–2 if HTML WAF | Under 60; leave room for other writers on the same project |
+| SOS HTTP lanes | 4 (direct) / 1–2 if HTML WAF / Apify conc 2–5 | Under 60; leave room for other writers on the same project |
 | Apify Playwright conc | 2–5 | WAF retries dominate cost if higher |
 | Supabase writes | **4** (`SUPABASE_WRITE_CONCURRENCY`) | Existing; ~8–12 in-flight with HTTP is plenty of headroom |
 | Never | ≥20 client connections | Other jobs on the 60 pool |
@@ -349,14 +347,16 @@ Writes are not the bottleneck (15k upserts at 4-wide is minutes). SOS / SI laten
 
 ### CA (majority)
 
-| Scenario | Apify $ | Wall clock @ 4 HTTP lanes | Owner names? |
-|----------|---------|---------------------------|--------------|
-| A. API keyword+detail only | **$0** | ~0.5–2 h (2 calls/row, ~0.4–1.2 s paced) | **No** (agent only) |
-| B. A + SI from official images, no challenge | **$0** | ~2–6 h (extra doc fetch) | Yes, if SI present |
-| C. A + SI via Apify because bizfileOnline is challenged | **~$100–$250** mid for ~13k (compute + residential) | ~20–40 h at conc 3 | Yes, if SI parses |
-| D. Josh obtains official weekly bulk with officers | **$0** | Minutes (local join) + write | Yes |
+calicodev developer API is **out**. Search and SI both go through public bizfileOnline. Direct HTTP is free when it works; Incapsula typically forces residential Playwright. Mid model: **~1.5 Apify lookups/row** (search + some SI), **~$0.015**/blocked lookup.
 
-**Do not start C until A is proven and a 50-row SI probe measures CU.** If D is available, skip C.
+| Scenario | Apify $ | Wall clock | Owner names? |
+|----------|---------|------------|--------------|
+| A. Direct HTTP search + SI (no challenge) | **$0** | ~2–6 h @ 4 lanes | Yes, if SI present |
+| B. Typical: Incapsula blocks datacenter; Playwright + residential for search (and SI when images/JSON also block) | **~$290 mid** for ~13,050 (~1.5 × $0.015); range **~$200–$400** | ~20–40 h at conc 3 | Yes, if SI parses |
+| C. Worst: two full Playwright runs/row + image SI | **~$400–$750** | longer | Yes, if SI parses |
+| D. Josh obtains official weekly bulk with officers | **$0** | Minutes (local join) | Yes |
+
+**Do not scale B until a 50-row probe measures CU** (direct vs Apify hit rate). If D is available, skip B/C.
 
 ### Non-CA ~2,310 (order IL → GA → OH → NC → AZ → CO → rest)
 
@@ -372,10 +372,10 @@ Writes are not the bottleneck (15k upserts at 4-wide is minutes). SOS / SI laten
 
 **Planning envelope for the first 15,359 (not a bid):**
 
-- Best (CA bulk or unchallenged SI + IL files + no Apify): **~$0**, **under a workday** of compute, dominated by CA API/SI.
-- Base (CA API $0 + SI unchallenged + a few hundred blocked HTML rows): **~$0–$40** Apify.
-- Bad (all CA SI forced through Playwright): **~$120–$250** Apify for CA + **~$20–$50** for other blocked states.
-- Do not plan the “all 15k through Apify” number (~$200–$750); that would mean we ignored official APIs.
+- Best (CA weekly bulk **or** unchallenged bizfileOnline + IL files + no Apify): **~$0**, under a workday of compute.
+- Base (CA Incapsula → Playwright residential, ~1.5 lookups/row, plus a few hundred other blocked HTML rows): **~$200–$400** Apify, dominated by CA.
+- Bad (two Playwright runs per CA row + image SI + other blocked states): **~$400–$800**.
+- There is no $0 “CA API” line item. Do not sign up for calicodev.
 
 `estimate_only` on the real table should print this envelope with **actual** state counts before anyone enables writes.
 
@@ -383,21 +383,20 @@ Writes are not the bottleneck (15k upserts at 4-wide is minutes). SOS / SI laten
 
 ## 10. What Josh must sign up for
 
-Required for CA name path:
+**Do not sign up for** [calicodev.sos.ca.gov](https://calicodev.sos.ca.gov). The Business Entity Search developer API is government-agencies-only. There is no `CA_SOS_API_KEY`.
 
-1. **California SOS BizFile API** — [calicodev.sos.ca.gov](https://calicodev.sos.ca.gov) → Sign up → confirm email → Products → subscribe to Business Entity Search → copy **primary** key. Store as env `CA_SOS_API_KEY` (legacy `CA_BIZFILE_API_KEY` still accepted). Free. Returns agent, not officers; officers come from Statement of Information.
+Required for CA name path at first-use volume:
+
+1. Confirm the existing **Apify** account (`APIFY_TOKEN` / `APIFY_PROXY_PASSWORD`) has **CU + residential GB** headroom. bizfileOnline Incapsula/Imperva blocks datacenter IPs; Playwright + `groups-RESIDENTIAL` is the fallback. Starter is enough for a 50-row probe; Scale only if the probe says most CA rows need Playwright.
 
 Optional, still official, still free or cheap:
 
-2. **CA weekly bulk / SOS data request** — ask whether the free weekly extract includes officer/SI names. If yes, first-use CA is a file join.
+2. **CA weekly bulk / SOS data request** — ask whether the free weekly extract includes officer/SI names. If yes, first-use CA is a file join and Apify for CA goes to **$0**.
 3. **IL Data Transparency Act files** — download Annual Report + Assumed Names from [ilsos.gov/data/bus-serv-home.html](https://www.ilsos.gov/data/bus-serv-home.html). No key. Do not scrape the search app.
-4. Confirm **Apify** account already used for `APIFY_PROXY_PASSWORD` has CU + residential GB headroom (Starter is enough for the base envelope; Scale only if we hit scenario C).
 
 Already in this repo (do not rotate unless `health` says missing): PermitStack, optional Florida Sunbiz Daily `sb_` key, Texas Comptroller, Veriphone.
 
-**Do not sign up for:** OpenSOSData, SOSfinder, Parse.bot eCorp wrappers, Apify officer-list Actors, CA paid master file, NC/GA/IN paid bulk, Nevada $125 file (unless a later explicit decision).
-
-Keys this scaffold does **not** persist via `set_enrichment_api_key` yet. Adding `ca_bizfile_api_key` to `SETTING_KEYS` needs a SQL allow-list migration on the permits project — Phase 2.
+**Do not sign up for:** calicodev government API, OpenSOSData, SOSfinder, Parse.bot eCorp wrappers, Apify officer-list Actors, CA paid master file, NC/GA/IN paid bulk, Nevada $125 file (unless a later explicit decision).
 
 ---
 
@@ -412,7 +411,7 @@ Keys this scaffold does **not** persist via `set_enrichment_api_key` yet. Adding
 
 ## 12. Phase 2 delivered in this PR (still no deploy / no writes)
 
-1. **CA** live keyword + city match via `CA_SOS_API_KEY` (legacy `CA_BIZFILE_API_KEY` accepted). Statement of Information officers: direct bizfileOnline / GetImageByNum first, Apify `playwright-scraper` fallback (existing `APIFY_TOKEN`), tesseract.js OCR on image SI when installed. Never paid datasets.
+1. **CA** public bizfileOnline search (`POST /api/Records/businessSearch`) + Statement of Information officers. Direct HTTP first; Apify `playwright-scraper` + residential if Incapsula/Imperva blocks. tesseract.js OCR on image SI when installed. **No `CA_SOS_API_KEY`.** Never paid datasets.
 2. **IL** Data Transparency Act bulk files (`IL_DTA_DIR`): TSV/CSV or fixed-width annual-report / name / agent. Search UI is never called.
 3. **GA / NC / AZ** official HTML, Apify fallback if blocked.
 4. **OH / CO** `agent_only` (CO via keyless Socrata `4ykn-tg5h`). No Apify.
@@ -426,7 +425,7 @@ Still later (not this PR): persist to Email Finder; `source_table` paging; remai
 
 ## 13. Sources
 
-- CA API guide v1.0.4; [calicodev.sos.ca.gov](https://calicodev.sos.ca.gov); [sos.ca.gov business-entities information-requests](https://www.sos.ca.gov/business-programs/business-entities/information-requests)
+- CA public search [bizfileOnline.sos.ca.gov](https://bizfileonline.sos.ca.gov/search/business); [sos.ca.gov business-entities information-requests](https://www.sos.ca.gov/business-programs/business-entities/information-requests). calicodev developer API is government-agencies-only and is not used.
 - IL [business entity search](https://apps.ilsos.gov/businessentitysearch/), [terms](https://www.ilsos.gov/privacypolicy.html), [Data Transparency Act files](https://www.ilsos.gov/data/bus-serv-home.html), [File Detail Report field list](https://www.ilsos.gov/departments/business-services/business-searches.html)
 - GA [ecorp.sos.ga.gov/businesssearch](https://ecorp.sos.ga.gov/businesssearch)
 - OH [businesssearch.ohiosos.gov](https://businesssearch.ohiosos.gov/) (officer gap confirmed against public portal behavior)
