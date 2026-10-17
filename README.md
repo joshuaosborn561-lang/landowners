@@ -38,7 +38,7 @@ This service writes to project **`kemvxzhcxvynmoutwdrh`**, schema **`permit_parc
 | `match_texas_officers` | Texas Comptroller PIR officers (`only_unmatched`, limit 50, resume) |
 | `match_florida_officers` | Florida Sunbiz officers (`only_unmatched`, public HTML; optional `florida_sos_api_key`) |
 | `match_state_owners` | Umbrella: route a list by state to CSLB / L&I / NYC DOB / NY DOS / MA CSL+SOS / MN DLI / PA DOS / TDLR. Counts only. MA falls back from license number to business-name search, then Secretary of the Commonwealth officers. PA uses Department of State business search (AG HIC is Turnstile-gated and disabled). |
-| `lookup_business_owner` | Phase 1 scaffold: US owner lookup by company name + city + state (no license number). `get_business_owner_job` for status. Dry/estimate only — see PLAN.md. Permit path stays on `match_state_owners`. |
+| `lookup_business_owner` | US owner lookup by company name + city + state (no license number). Phase 2: CA BizFile + SI officers, IL DTA files, GA/NC/AZ HTML, OH/CO agent-only. `estimate_only` / batch `rows[]` / `get_business_owner_job`. **No writes, no deploy.** Local CSV: `npx tsx scripts/owner_lookup_sample.ts --in companies.csv --out results.csv`. Permit path stays on `match_state_owners`. |
 | `match_california_owners` … `match_texas_tdlr_owners` | Per-state owner tools (same contract; callable on their own) |
 | `lookup_line_type` | Veriphone Standard (~$2.40/1k) cell vs landline |
 | `owner_people_search` / `record_owner_cell` | Google + free people-search leftovers |
@@ -48,6 +48,29 @@ This service writes to project **`kemvxzhcxvynmoutwdrh`**, schema **`permit_parc
 | `sync_to_supabase` | Full matching-set S2S sync — **counts only**; contractor syncs also catalog a calling list |
 
 Prefer save/sync + SQL `select count(*)` over dumping rows into chat.
+
+## Local business-owner sample (no Supabase)
+
+Company + city + state CSV in; results CSV + summary out. Does **not** write to Supabase and does **not** deploy.
+
+```bash
+npx tsx scripts/owner_lookup_sample.ts --in companies.csv --out results.csv
+```
+
+Required CSV columns: `company` (or `company_name`), `city`, `state`.
+
+| Env / flag | Purpose |
+|------------|---------|
+| `CA_SOS_API_KEY` (or `CA_BIZFILE_API_KEY`) | California BizFile entity match; SI officers follow |
+| `IL_DTA_DIR` | Illinois Data Transparency Act bulk files (never scrape the IL search UI) |
+| `APIFY_TOKEN` | Playwright HTML fallback when official pages block. Never paid officer datasets |
+| `--no-apify` | Skip Apify even if a token is set |
+| `--live false` | Offline / fixture mode (no SOS HTTP) |
+| `--include-agents` | Include registered-agent rows (still not waterfall-ready) |
+| `--states CA,IL` | Limit states |
+| `--summary path` | Summary JSON path (default `<out>.summary.json`) |
+
+Summary prints hit rate per state, officer vs agent-only counts, and Apify $ spent. Permit/license lookup is unchanged (`match_state_owners`).
 
 Claude connector: `https://workspace-production-4702.up.railway.app/mcp` (authless).
 

@@ -1,6 +1,6 @@
 # US business-owner lookup — Phase 1 plan (DRAFT)
 
-Status: **research + scaffold only**. Do not merge to production. Do not deploy. Do not run against live lead tables from this PR.
+Status: **Phase 2 implemented on this draft PR**. Do not merge to production. Do not deploy. Do not run against live lead tables from this PR. Local CSV probe: `npx tsx scripts/owner_lookup_sample.ts --in companies.csv --out results.csv`.
 
 This document generalizes the existing **permit / license-board** path (`src/server/lib/stateOwners/`, `match_state_owners`) into a **company name + city + state** lookup that does not require a permit or license number. The permit path stays callable and unchanged.
 
@@ -385,7 +385,7 @@ Writes are not the bottleneck (15k upserts at 4-wide is minutes). SOS / SI laten
 
 Required for CA name path:
 
-1. **California SOS BizFile API** — [calicodev.sos.ca.gov](https://calicodev.sos.ca.gov) → Sign up → confirm email → Products → subscribe to Business Entity Search → copy **primary** key. Store later as env `CA_BIZFILE_API_KEY` (not in this PR’s production). Free. Returns agent, not officers.
+1. **California SOS BizFile API** — [calicodev.sos.ca.gov](https://calicodev.sos.ca.gov) → Sign up → confirm email → Products → subscribe to Business Entity Search → copy **primary** key. Store as env `CA_SOS_API_KEY` (legacy `CA_BIZFILE_API_KEY` still accepted). Free. Returns agent, not officers; officers come from Statement of Information.
 
 Optional, still official, still free or cheap:
 
@@ -410,16 +410,17 @@ Keys this scaffold does **not** persist via `set_enrichment_api_key` yet. Adding
 - `lookup_business_owner` / `get_business_owner_job` MCP stubs: estimate + dry job status; **no SOS calls, no writes, no deploy**.
 - Tests that the permit router still maps CA → CSLB and CSLB still requires a license number.
 
-## 12. Phase 2+ (not this PR)
+## 12. Phase 2 delivered in this PR (still no deploy / no writes)
 
-1. Josh pastes CA API key (env or future setting).
-2. Live CA keyword search + city match + SI officer parse; 50-row probe.
-3. IL bulk ingest.
-4. GA, OH (agent-only short-circuit), NC, AZ, CO (Socrata short-circuit).
-5. Wire remaining HAVE adapters (FL/TX/MA/PA/NY/WA/MN).
-6. Persist to the Email Finder source table; `source_table` paging; respect 60-conn cap.
-7. Apify fallback only for states the probe marked `blocked` and whose ToS allow it.
-8. Optional: `match_state_owners` fallback when `no_license_number`.
+1. **CA** live keyword + city match via `CA_SOS_API_KEY` (legacy `CA_BIZFILE_API_KEY` accepted). Statement of Information officers: direct bizfileOnline / GetImageByNum first, Apify `playwright-scraper` fallback (existing `APIFY_TOKEN`), tesseract.js OCR on image SI when installed. Never paid datasets.
+2. **IL** Data Transparency Act bulk files (`IL_DTA_DIR`): TSV/CSV or fixed-width annual-report / name / agent. Search UI is never called.
+3. **GA / NC / AZ** official HTML, Apify fallback if blocked.
+4. **OH / CO** `agent_only` (CO via keyless Socrata `4ykn-tg5h`). No Apify.
+5. MCP `lookup_business_owner` batch (`rows[]`, `max_rows` up to 5000), `estimate_only`, `wait`, `get_business_owner_job` status + per-state hit rates + `apify_usd_spent`.
+6. CLI `scripts/owner_lookup_sample.ts` — CSV in, results CSV + summary JSON (hit rate by state, officer vs agent-only, Apify $). No Supabase.
+7. Unit tests + fixtures. Permit path (`match_state_owners` / CSLB license) stays green.
+
+Still later (not this PR): persist to Email Finder; `source_table` paging; remaining HAVE adapters (FL/TX/MA/PA/NY/WA/MN); optional `match_state_owners` fallback when `no_license_number`.
 
 ---
 

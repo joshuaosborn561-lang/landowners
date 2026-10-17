@@ -37,10 +37,10 @@ describe('CA BizFile fixture (synthetic)', () => {
     assert.equal(hit.item.EntityID, '202399900002');
   });
 
-  it('does not treat the API agent as waterfall-ready', () => {
-    const result = resolveNameLookup(
+  it('does not treat the API agent as waterfall-ready', async () => {
+    const result = await resolveNameLookup(
       { company_name: 'Sample Builders LLC', city: 'Oakland', state: 'CA' },
-      { caPayload: fixture, includeAgents: true },
+      { caPayload: fixture, includeAgents: true, live: false },
     );
     assert.equal(result.source, 'ca_bizfile');
     assert.equal(result.coverage_reason, 'agent_only');
@@ -49,10 +49,25 @@ describe('CA BizFile fixture (synthetic)', () => {
     assert.equal(isWaterfallReady(result.people[0]!), false);
   });
 
-  it('returns not_implemented for CA when no payload is injected', () => {
-    const result = resolveNameLookup({ company_name: 'Sample Builders LLC', city: 'Oakland', state: 'CA' });
-    assert.equal(result.coverage_reason, 'not_implemented');
-    assert.equal(result.implemented, false);
+  it('returns missing_key for CA when no API key or payload is injected', async () => {
+    const result = await resolveNameLookup(
+      { company_name: 'Sample Builders LLC', city: 'Oakland', state: 'CA' },
+      { live: false },
+    );
+    assert.equal(result.coverage_reason, 'missing_key');
+    assert.equal(result.source, 'ca_bizfile');
+    assert.equal(result.implemented, true);
+  });
+
+  it('extracts SI officers after a BizFile entity match', async () => {
+    const si = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'ca-si-text.txt'), 'utf8');
+    const result = await resolveNameLookup(
+      { company_name: 'Sample Builders LLC', city: 'Oakland', state: 'CA' },
+      { caPayload: fixture, caSiText: si, live: false },
+    );
+    assert.equal(result.coverage_reason, null);
+    assert.ok(result.people.some((p) => isWaterfallReady(p) && p.last_name === 'SAMPLE'));
+    assert.equal(result.source, 'ca_bizfile');
   });
 });
 

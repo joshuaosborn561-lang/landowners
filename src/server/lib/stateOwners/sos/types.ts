@@ -55,9 +55,30 @@ export interface NameLookupResult {
   entity_id?: string | null;
   business_name?: string | null;
   implemented: boolean;
+  apify_usd?: number;
+  via_apify?: boolean;
+  ocr_used?: boolean;
 }
 
 export type BusinessOwnerJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'stopped';
+
+export interface BusinessOwnerJobHitRate {
+  attempted: number;
+  named: number;
+  agent_only: number;
+  hit_rate: number;
+}
+
+export interface BusinessOwnerNamelessSample {
+  source: BoardSource;
+  coverage_reason: CoverageReason | null;
+  implemented: boolean;
+  match_method: NameLookupResult['match_method'] | null;
+  people_count: number;
+  waterfall_ready: boolean;
+  via_apify?: boolean;
+  ocr_used?: boolean;
+}
 
 export interface BusinessOwnerJobSnapshot {
   job_id: string;
@@ -68,8 +89,15 @@ export interface BusinessOwnerJobSnapshot {
   named: number;
   agent_only: number;
   remaining: number;
-  hit_rate_by_state: Record<string, { attempted: number; named: number; agent_only: number; hit_rate: number }>;
+  hit_rate_by_state: Record<string, BusinessOwnerJobHitRate>;
   apify_estimate_usd: number;
+  apify_usd_spent: number;
+  via_apify: number;
+  ocr_used: number;
   writes_enabled: boolean;
+  phase: number;
+  sample?: BusinessOwnerNamelessSample[];
   error?: string;
+  started_at?: string;
+  finished_at?: string;
 }

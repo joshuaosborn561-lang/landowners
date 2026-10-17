@@ -1201,14 +1201,14 @@ WHAT IT DOES: Routes each lead by state to CSLB / L&I / NYC DOB / NY DOS / MA CS
     'lookup_business_owner',
     {
       title: 'Lookup US business owners by company + city + state',
-      description: `WHEN TO USE: Top-up bots need an owner/officer name with no permit or license number. Input is company name + city + state (optional domain). Batch via source_table+where (Phase 2) or a small rows[] payload.
-WHAT IT DOES (Phase 1 scaffold): estimate_only returns cost/runtime. Dry jobs return counts and job_id. Does NOT call live SOS, does NOT write, does NOT deploy. CA BizFile API returns registered agent only; officers come from Statement of Information in Phase 2. Permit lists still use match_state_owners.
-OUTPUT: counts, job_id, per-state hit rates, nameless samples. Waterfall fields (first/last, title, company, domain, source_url, confidence) are persisted later — never dumped in chat.
-NEXT: get_business_owner_job(job_id).`,
+      description: `WHEN TO USE: Top-up bots need an owner/officer name with no permit or license number. Input is company name + city + state (optional domain). Batch via rows[] (preferred in this PR) or source_table+where later.
+WHAT IT DOES (Phase 2): lookup by SOS name path. CA = BizFile API (env CA_SOS_API_KEY) + Statement of Information officers (direct fetch, Apify Playwright fallback, free OCR on image SI). IL = Data Transparency Act bulk files (IL_DTA_DIR). GA/NC/AZ = official HTML + Apify fallback. OH/CO = agent_only (CO via Socrata). estimate_only = cost/runtime, no SOS calls. Jobs expose status via get_business_owner_job. Does NOT write, does NOT deploy. Permit lists still use match_state_owners.
+OUTPUT: counts, job_id, per-state hit rates, nameless samples, apify_usd_spent. Waterfall fields are not dumped in chat.
+NEXT: get_business_owner_job(job_id). Local CSV probe: npx tsx scripts/owner_lookup_sample.ts --in companies.csv --out results.csv`,
       inputSchema: {
         source_table: z.string().optional().describe('Phase 2: schema.table. Do not paste lead rows into chat.'),
         where: z.string().optional().describe('Phase 2 SQL predicate for source_table'),
-        list_id: z.string().optional().describe('Existing calling list. Phase 1 does not fetch it; use match_state_owners for permits.'),
+        list_id: z.string().optional().describe('Existing calling list. Name path does not fetch it; use match_state_owners for permits.'),
         rows: z
           .array(
             z.object({
@@ -1222,10 +1222,11 @@ NEXT: get_business_owner_job(job_id).`,
           .optional()
           .describe('Small dry-run batch only. Prefer source_table in Phase 2.'),
         states: z.array(z.string()).optional().describe('Optional state codes. Rollout order is CA, IL, GA, OH, NC, AZ, CO, then the rest.'),
-        max_rows: z.number().int().min(1).max(100).optional(),
-        dry_run: z.boolean().optional().describe('Default true. Phase 1 never writes.'),
+        max_rows: z.number().int().min(1).max(5000).optional().describe('Batch cap (default 500, max 5000).'),
+        dry_run: z.boolean().optional().describe('Default true. This PR never writes to Supabase.'),
         estimate_only: z.boolean().optional().describe('Cost + runtime envelope. No SOS calls.'),
         include_agents: z.boolean().optional().describe('Default false. Agents are never waterfall-ready.'),
+        wait: z.boolean().optional().describe('Default true. If false, return job_id immediately and poll get_business_owner_job.'),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -1242,7 +1243,7 @@ NEXT: get_business_owner_job(job_id).`,
     'get_business_owner_job',
     {
       title: 'Business owner lookup — job status',
-      description: `Poll lookup_business_owner. Returns status, processed/named/agent_only counts, remaining, per-state hit rates. Never names.`,
+      description: `Poll lookup_business_owner. Returns status, processed/named/agent_only counts, remaining, per-state hit rates, apify_usd_spent. Never names.`,
       inputSchema: {
         job_id: z.string().min(1),
       },

@@ -13,7 +13,7 @@ Remote MCP: `https://workspace-production-4702.up.railway.app/mcp` (authless Str
 - `permits_contractors_summary|query|sample|get|export_csv`
 - `save_calling_list` / `list_calling_lists` / `query_calling_list` / `import_calling_list_csv` — persist + filter for Cayden (`dial_status=owner_cell`); CSV for non-DFW
 - `score_calling_list` / `match_state_owners` / `match_texas_officers` / `match_florida_officers` / `lookup_line_type` / `owner_people_search` / `record_owner_cell` — owner-cell enrichment (resume via only_unscored / only_unmatched). Per-state owner tools stay callable.
-- `lookup_business_owner` / `get_business_owner_job` — Phase 1 scaffold: company+city+state owner lookup (no license required). Estimate/dry counts only; no live SOS, no writes. See PLAN.md.
+- `lookup_business_owner` / `get_business_owner_job` — company+city+state owner lookup (no license required). Phase 2: CA/IL/GA/NC/AZ/OH/CO. Estimate/batch/job status; no writes. Local CSV: `npx tsx scripts/owner_lookup_sample.ts`. See PLAN.md. Permit path stays on `match_state_owners`.
 - `parcels_summary|query|sample|export_csv`
 - `build_operators`
 - `sync_to_supabase`

@@ -1,23 +1,34 @@
 import { normalizeState } from '../lib/stateOwners/names.js';
 import {
-  apifyEligible,
   catalogByCode,
   catalogInRolloutOrder,
   getJob,
   newJobId,
   ownerYieldPossible,
   putJob,
+  patchJob,
   resolveNameLookup,
   type BusinessOwnerJobSnapshot,
+  type BusinessOwnerNamelessSample,
+  type LookupContext,
   type NameLookupInput,
+  type NameLookupResult,
 } from '../lib/stateOwners/sos/index.js';
+import { defaultLookupContext } from '../lib/stateOwners/sos/context.js';
+import { mapPool } from '../lib/stateOwners/sos/pool.js';
+import { APIFY_USD_PER_BLOCKED_LOOKUP } from '../lib/stateOwners/sos/spend.js';
+import { isWaterfallReady } from '../lib/stateOwners/sos/waterfall.js';
 
-/** Starter plan mid-point from PLAN.md. Compute + residential, media off. */
-export const APIFY_USD_PER_BLOCKED_LOOKUP = 0.015;
+export { APIFY_USD_PER_BLOCKED_LOOKUP };
 export const SOS_HTTP_LANES = 4;
 /** Existing write gate. Keep well under the 60-connection project cap. */
 export const OWNER_LOOKUP_WRITE_CONCURRENCY = 4;
-export const PHASE1_WRITES_ENABLED = false;
+/** Phase 2 still does not persist people. CLI and MCP are counts / local CSV only. */
+export const WRITES_ENABLED = false;
+/** @deprecated use WRITES_ENABLED */
+export const PHASE1_WRITES_ENABLED = WRITES_ENABLED;
+export const OWNER_LOOKUP_PHASE = 2;
+export const MAX_BATCH_ROWS = 5000;
 
 const FIRST_USE_ASSUMED_TOTAL = 15359;
 const FIRST_USE_ASSUMED_CA_SHARE = 0.85;
@@ -33,6 +44,9 @@ export interface LookupBusinessOwnerOpts {
   estimate_only?: boolean;
   include_agents?: boolean;
   job_id?: string;
+  wait?: boolean;
+  context?: LookupContext;
+  concurrency?: number;
 }
 
 function emptyStateStats() {
@@ -78,15 +92,97 @@ export function firstUseEnvelope(): Record<string, unknown> {
   };
 }
 
-function namelessSample(result: ReturnType<typeof resolveNameLookup>) {
+function namelessSample(result: NameLookupResult): BusinessOwnerNamelessSample {
   return {
     source: result.source,
     coverage_reason: result.coverage_reason,
     implemented: result.implemented,
     match_method: result.match_method ?? null,
     people_count: result.people.length,
-    waterfall_ready: result.people.some((p) => p.role !== 'registered_agent' && p.coverage_reason !== 'agent_only'),
+    waterfall_ready: result.people.some((p) => isWaterfallReady(p)),
+    via_apify: result.via_apify,
+    ocr_used: result.ocr_used,
   };
+}
+
+function capRows(rows: NameLookupInput[], maxRows?: number): NameLookupInput[] {
+  const cap = Math.max(1, Math.min(maxRows ?? 500, MAX_BATCH_ROWS));
+  return rows.slice(0, cap);
+}
+
+function emptySnapshot(jobId: string, opts: LookupBusinessOwnerOpts, remaining: number, estimateUsd: number): BusinessOwnerJobSnapshot {
+  return {
+    job_id: jobId,
+    status: 'queued',
+    dry_run: opts.dry_run !== false,
+    estimate_only: opts.estimate_only === true,
+    processed: 0,
+    named: 0,
+    agent_only: 0,
+    remaining,
+    hit_rate_by_state: {},
+    apify_estimate_usd: estimateUsd,
+    apify_usd_spent: 0,
+    via_apify: 0,
+    ocr_used: 0,
+    writes_enabled: WRITES_ENABLED,
+    phase: OWNER_LOOKUP_PHASE,
+    sample: [],
+    started_at: new Date().toISOString(),
+  };
+}
+
+async function runLookupJob(
+  snapshot: BusinessOwnerJobSnapshot,
+  rows: NameLookupInput[],
+  opts: LookupBusinessOwnerOpts,
+): Promise<BusinessOwnerJobSnapshot> {
+  patchJob(snapshot.job_id, { status: 'running' });
+  const ctx = defaultLookupContext({
+    ...(opts.context || {}),
+    includeAgents: opts.include_agents === true || opts.context?.includeAgents === true,
+    live: opts.context?.live ?? true,
+  });
+  const lanes = Math.max(1, Math.min(opts.concurrency ?? SOS_HTTP_LANES, 8));
+  const samples: BusinessOwnerNamelessSample[] = [];
+  try {
+    const resolved = await mapPool(rows, lanes, async (row) => ({
+      row,
+      result: await resolveNameLookup(row, ctx),
+    }));
+    for (const { row, result } of resolved) {
+      const st = normalizeState(row.state) || 'UNK';
+      const stats = snapshot.hit_rate_by_state[st] ?? emptyStateStats();
+      stats.attempted += 1;
+      const named = result.people.some((p) => isWaterfallReady(p));
+      if (named) stats.named += 1;
+      if (result.coverage_reason === 'agent_only') stats.agent_only += 1;
+      stats.hit_rate = stats.attempted ? Number((stats.named / stats.attempted).toFixed(3)) : 0;
+      snapshot.hit_rate_by_state[st] = stats;
+      snapshot.processed += 1;
+      snapshot.remaining = Math.max(0, rows.length - snapshot.processed);
+      if (named) snapshot.named += 1;
+      if (result.coverage_reason === 'agent_only') snapshot.agent_only += 1;
+      if (result.via_apify) snapshot.via_apify += 1;
+      if (result.ocr_used) snapshot.ocr_used += 1;
+      snapshot.apify_usd_spent = Number((snapshot.apify_usd_spent + (result.apify_usd || 0)).toFixed(4));
+      if (samples.length < 10) samples.push(namelessSample(result));
+    }
+    snapshot.sample = samples;
+    snapshot.apify_usd_spent = Number((ctx.spend?.usd ?? snapshot.apify_usd_spent).toFixed(2));
+    snapshot.remaining = 0;
+    snapshot.status = 'completed';
+    snapshot.finished_at = new Date().toISOString();
+    putJob(snapshot);
+    return snapshot;
+  } catch (err) {
+    snapshot.status = 'failed';
+    snapshot.error = err instanceof Error ? err.message : 'lookup failed';
+    snapshot.finished_at = new Date().toISOString();
+    snapshot.sample = samples;
+    putJob(snapshot);
+    return snapshot;
+  }
 }
 
 export async function lookupBusinessOwner(opts: LookupBusinessOwnerOpts): Promise<Record<string, unknown>> {
@@ -94,33 +190,37 @@ export async function lookupBusinessOwner(opts: LookupBusinessOwnerOpts): Promis
   const dryRun = opts.dry_run !== false;
   const estimateOnly = opts.estimate_only === true;
   const states = (opts.states || []).map(normalizeState).filter(Boolean);
-  const rows = (opts.rows || []).slice(0, Math.max(1, Math.min(opts.max_rows ?? 100, 100)));
+  const filtered = (opts.rows || []).filter((row) => !states.length || states.includes(normalizeState(row.state)));
+  const rows = capRows(filtered, opts.max_rows);
 
   if (estimateOnly) {
     const apifyUsd = rows.length ? estimateApifyUsd(rows) : 0;
+    const snapshot = emptySnapshot(jobId, opts, 0, apifyUsd);
+    snapshot.status = 'completed';
+    snapshot.estimate_only = true;
+    snapshot.processed = 0;
+    snapshot.remaining = rows.length || FIRST_USE_ASSUMED_TOTAL;
+    snapshot.finished_at = new Date().toISOString();
+    putJob(snapshot);
     return {
       ok: true,
-      job_id: jobId,
-      estimate_only: true,
-      dry_run: true,
-      writes_enabled: PHASE1_WRITES_ENABLED,
-      phase: 1,
+      ...snapshot,
       rows_in_payload: rows.length,
       source_table: opts.source_table || null,
       where: opts.where ? '(redacted)' : null,
       states: states.length ? states : catalogInRolloutOrder().map((r) => r.code),
       rollout_order: catalogInRolloutOrder().map((r) => r.code),
-      apify_estimate_usd: apifyUsd,
       runtime_seconds: estimateRuntimeSeconds(rows.length || FIRST_USE_ASSUMED_TOTAL),
       first_use: firstUseEnvelope(),
+      writes_enabled: WRITES_ENABLED,
       josh_signup: [
-        'California SOS BizFile API key (free) at https://calicodev.sos.ca.gov',
+        'California SOS BizFile API key (free) at https://calicodev.sos.ca.gov — env CA_SOS_API_KEY (legacy CA_BIZFILE_API_KEY still accepted)',
         'Optional: CA weekly bulk if it includes Statement of Information officers',
-        'Illinois Data Transparency Act Annual Report files (free; do not scrape the search UI)',
-        'Confirm Apify CU + residential GB on the existing account',
+        'Illinois Data Transparency Act Annual Report files (free; set IL_DTA_DIR; do not scrape the search UI)',
+        'Confirm Apify CU + residential GB on the existing account (APIFY_TOKEN)',
       ],
       assistant_instructions:
-        'Phase 1 estimate only. No SOS calls. No writes. Do not dump company names. Show counts, $ envelope, and what Josh must sign up for.',
+        'Phase 2 estimate only. No SOS calls. No writes. Do not dump company names. Show counts, $ envelope, and missing keys.',
     };
   }
 
@@ -128,8 +228,9 @@ export async function lookupBusinessOwner(opts: LookupBusinessOwnerOpts): Promis
     return {
       ok: false,
       job_id: jobId,
-      error: 'phase1_scaffold: source_table paging is not implemented. Pass estimate_only=true or wait for Phase 2.',
-      writes_enabled: PHASE1_WRITES_ENABLED,
+      error: 'source_table paging is not enabled in this PR (no Supabase writes). Pass rows[] or use scripts/owner_lookup_sample.ts.',
+      writes_enabled: WRITES_ENABLED,
+      phase: OWNER_LOOKUP_PHASE,
     };
   }
 
@@ -137,55 +238,35 @@ export async function lookupBusinessOwner(opts: LookupBusinessOwnerOpts): Promis
     return {
       ok: false,
       job_id: jobId,
-      error: 'phase1_scaffold: list_id fetch is not implemented. Permit lists still use match_state_owners.',
-      writes_enabled: PHASE1_WRITES_ENABLED,
+      error: 'list_id fetch is not implemented on the name path. Permit lists still use match_state_owners.',
+      writes_enabled: WRITES_ENABLED,
+      phase: OWNER_LOOKUP_PHASE,
     };
   }
 
-  const snapshot: BusinessOwnerJobSnapshot = {
-    job_id: jobId,
-    status: 'running',
-    dry_run: dryRun,
-    estimate_only: false,
-    processed: 0,
-    named: 0,
-    agent_only: 0,
-    remaining: rows.length,
-    hit_rate_by_state: {},
-    apify_estimate_usd: estimateApifyUsd(rows),
-    writes_enabled: PHASE1_WRITES_ENABLED,
-  };
+  const snapshot = emptySnapshot(jobId, { ...opts, dry_run: dryRun }, rows.length, estimateApifyUsd(rows));
+  snapshot.status = 'running';
   putJob(snapshot);
 
-  const samples: ReturnType<typeof namelessSample>[] = [];
-  for (const row of rows) {
-    if (states.length && !states.includes(normalizeState(row.state))) continue;
-    const result = resolveNameLookup(row, { includeAgents: opts.include_agents === true });
-    const st = normalizeState(row.state) || 'UNK';
-    const stats = snapshot.hit_rate_by_state[st] ?? emptyStateStats();
-    stats.attempted += 1;
-    const named = result.people.some((p) => p.role !== 'registered_agent');
-    if (named) stats.named += 1;
-    if (result.coverage_reason === 'agent_only') stats.agent_only += 1;
-    stats.hit_rate = stats.attempted ? Number((stats.named / stats.attempted).toFixed(3)) : 0;
-    snapshot.hit_rate_by_state[st] = stats;
-    snapshot.processed += 1;
-    if (named) snapshot.named += 1;
-    if (result.coverage_reason === 'agent_only') snapshot.agent_only += 1;
-    if (samples.length < 10) samples.push(namelessSample(result));
+  const wait = opts.wait !== false;
+  if (!wait) {
+    void runLookupJob(snapshot, rows, opts);
+    return {
+      ok: true,
+      ...getJob(jobId),
+      assistant_instructions: 'Job running. Poll get_business_owner_job. Counts only. No Supabase writes.',
+    };
   }
-  snapshot.remaining = 0;
-  snapshot.status = 'completed';
-  putJob(snapshot);
 
+  const done = await runLookupJob(snapshot, rows, opts);
   return {
-    ok: true,
-    ...snapshot,
-    phase: 1,
-    sample: samples,
+    ok: done.status !== 'failed',
+    ...done,
+    dry_run: dryRun,
+    writes_enabled: WRITES_ENABLED,
     assistant_instructions: dryRun
-      ? 'Phase 1 dry scaffold. Counts only. No SOS HTTP. No Supabase writes. Permit path is still match_state_owners.'
-      : 'Phase 1 refuses production writes. Re-run dry_run=true. Enable writes only in Phase 2 after Josh has the CA API key.',
+      ? 'Phase 2 dry lookup. Counts only. No Supabase writes. Permit path is still match_state_owners.'
+      : 'Phase 2 refuses production writes. Re-run dry_run=true. Persist is a later PR.',
   };
 }
 

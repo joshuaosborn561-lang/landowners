@@ -1,5 +1,8 @@
+import { DESKTOP_UA } from '../http.js';
 import { isRegistryAgentName } from '../names.js';
 import type { CoverageReason } from '../types.js';
+import type { LookupContext } from './context.js';
+import { ctxFetch } from './context.js';
 import { pickBestEntityMatch } from './match.js';
 
 export const CA_BIZFILE_KEYWORD =
@@ -68,7 +71,53 @@ export function caAgentCoverage(agentName: string | null | undefined): CoverageR
   return 'agent_only';
 }
 
-/** Phase 1: no live HTTP. Callers inject JSON. */
+export async function searchCaBizfileKeyword(
+  searchTerm: string,
+  apiKey: string,
+  ctx?: LookupContext,
+): Promise<{ status: number; payload: unknown; body: string }> {
+  const url = `${CA_BIZFILE_KEYWORD}?search-term=${encodeURIComponent(searchTerm.trim())}`;
+  const res = await ctxFetch(ctx)(url, {
+    headers: {
+      'Ocp-Apim-Subscription-Key': apiKey,
+      Accept: 'application/json',
+      'User-Agent': DESKTOP_UA,
+    },
+  });
+  const body = await res.text();
+  let payload: unknown = null;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    payload = null;
+  }
+  return { status: res.status, payload, body };
+}
+
+export async function fetchCaBizfileDetail(
+  entityNumber: string,
+  apiKey: string,
+  ctx?: LookupContext,
+): Promise<{ status: number; payload: unknown; body: string }> {
+  const url = `${CA_BIZFILE_DETAIL}?entity-number=${encodeURIComponent(entityNumber.trim())}`;
+  const res = await ctxFetch(ctx)(url, {
+    headers: {
+      'Ocp-Apim-Subscription-Key': apiKey,
+      Accept: 'application/json',
+      'User-Agent': DESKTOP_UA,
+    },
+  });
+  const body = await res.text();
+  let payload: unknown = null;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    payload = null;
+  }
+  return { status: res.status, payload, body };
+}
+
+/** Keyword JSON match. Live HTTP is in searchCaBizfileKeyword. */
 export function matchCaBizfileFromPayload(
   companyName: string,
   city: string | null | undefined,

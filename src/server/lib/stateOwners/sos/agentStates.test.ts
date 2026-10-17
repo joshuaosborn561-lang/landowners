@@ -1,0 +1,36 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, it } from 'node:test';
+import { resolveColoradoAgentOnly, resolveOhioAgentOnly } from './agentStates.js';
+import { isWaterfallReady } from './waterfall.js';
+
+const coRows = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'co-soda.json'), 'utf8'),
+);
+
+describe('OH/CO agent_only', () => {
+  it('marks Ohio as agent_only without Apify', async () => {
+    const result = await resolveOhioAgentOnly({
+      company_name: 'Sample Masonry LLC',
+      city: 'Columbus',
+      state: 'OH',
+    });
+    assert.equal(result.coverage_reason, 'agent_only');
+    assert.equal(result.implemented, true);
+    assert.equal(result.people.length, 0);
+    assert.equal(result.via_apify, undefined);
+  });
+
+  it('confirms a Colorado entity via Socrata and never treats the agent as waterfall-ready', async () => {
+    const result = await resolveColoradoAgentOnly(
+      { company_name: 'Sample HVAC LLC', city: 'Denver', state: 'CO' },
+      { live: false, coRows, includeAgents: true },
+    );
+    assert.equal(result.coverage_reason, 'agent_only');
+    assert.equal(result.implemented, true);
+    assert.equal(result.people[0]?.role, 'registered_agent');
+    assert.equal(isWaterfallReady(result.people[0]!), false);
+  });
+});
