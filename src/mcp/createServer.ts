@@ -30,6 +30,10 @@ import {
   scoreCallingList,
 } from '../server/services/enrichCallingList.js';
 import { matchStateOwners } from '../server/services/matchStateOwners.js';
+import {
+  getBusinessOwnerJob,
+  lookupBusinessOwner,
+} from '../server/services/lookupBusinessOwner.js';
 import { buildOperators } from '../server/services/operators.js';
 import { parcelsToCsv } from '../server/services/parcels.js';
 import { loadCounty } from '../server/parcels/loadCounty.js';
@@ -1193,6 +1197,66 @@ WHAT IT DOES: Routes each lead by state to CSLB / L&I / NYC DOB / NY DOS / MA CS
     { name: 'match_pennsylvania_owners', title: 'Pennsylvania DOS officers', board: 'pa_dos' },
     { name: 'match_texas_tdlr_owners', title: 'Texas TDLR (+ SOS fallback) owners', board: 'tx_tdlr' },
   ];
+  server.registerTool(
+    'lookup_business_owner',
+    {
+      title: 'Lookup US business owners by company + city + state',
+      description: `WHEN TO USE: Top-up bots need an owner/officer name with no permit or license number. Input is company name + city + state (optional domain). Batch via source_table+where (Phase 2) or a small rows[] payload.
+WHAT IT DOES (Phase 1 scaffold): estimate_only returns cost/runtime. Dry jobs return counts and job_id. Does NOT call live SOS, does NOT write, does NOT deploy. CA BizFile API returns registered agent only; officers come from Statement of Information in Phase 2. Permit lists still use match_state_owners.
+OUTPUT: counts, job_id, per-state hit rates, nameless samples. Waterfall fields (first/last, title, company, domain, source_url, confidence) are persisted later — never dumped in chat.
+NEXT: get_business_owner_job(job_id).`,
+      inputSchema: {
+        source_table: z.string().optional().describe('Phase 2: schema.table. Do not paste lead rows into chat.'),
+        where: z.string().optional().describe('Phase 2 SQL predicate for source_table'),
+        list_id: z.string().optional().describe('Existing calling list. Phase 1 does not fetch it; use match_state_owners for permits.'),
+        rows: z
+          .array(
+            z.object({
+              company_name: z.string().min(1),
+              city: z.string().optional(),
+              state: z.string().min(2),
+              domain: z.string().optional(),
+              license_number: z.string().optional(),
+            }),
+          )
+          .optional()
+          .describe('Small dry-run batch only. Prefer source_table in Phase 2.'),
+        states: z.array(z.string()).optional().describe('Optional state codes. Rollout order is CA, IL, GA, OH, NC, AZ, CO, then the rest.'),
+        max_rows: z.number().int().min(1).max(100).optional(),
+        dry_run: z.boolean().optional().describe('Default true. Phase 1 never writes.'),
+        estimate_only: z.boolean().optional().describe('Cost + runtime envelope. No SOS calls.'),
+        include_agents: z.boolean().optional().describe('Default false. Agents are never waterfall-ready.'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await lookupBusinessOwner(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'lookup_business_owner failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'get_business_owner_job',
+    {
+      title: 'Business owner lookup — job status',
+      description: `Poll lookup_business_owner. Returns status, processed/named/agent_only counts, remaining, per-state hit rates. Never names.`,
+      inputSchema: {
+        job_id: z.string().min(1),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await getBusinessOwnerJob(args.job_id));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'get_business_owner_job failed');
+      }
+    },
+  );
+
   for (const spec of perState) {
     server.registerTool(
       spec.name,

@@ -4,6 +4,14 @@ const COMPANY_WORDS =
 const LEGAL_SUFFIX =
   /\b(THE|A|AN|LLC|L\s*L\s*C|INC|INCORPORATED|LTD|LP|LLP|PLLC|PC|PA|CO|COMPANY|CORP|CORPORATION)\b/gi;
 
+/** Split `LEGAL NAME DBA TRADE NAME` so both sides can be scored. */
+export function splitLegalAndDba(name: string): { legal: string; dba: string | null } {
+  const raw = String(name || '').replace(/\s+/g, ' ').trim();
+  const m = raw.match(/^(.*?)\s+\bD\s*\.?\s*B\s*\.?\s*A\.?\s+(.+)$/i);
+  if (!m?.[1] || !m[2]) return { legal: raw, dba: null };
+  return { legal: m[1].trim(), dba: m[2].trim() };
+}
+
 /** Strip punctuation, legal suffixes, and a trailing "DBA …" / "D/B/A …". */
 export function normalizeCompanyName(name: string): string {
   return String(name || '')
@@ -192,13 +200,15 @@ export function pickBestNameMatchScored<T>(
       if (tri >= minTrigram) {
         score = Math.round(tri * 100);
         method = 'trigram';
-        const city = String(opts?.city || '').trim().toLowerCase();
-        const zip = String(opts?.zip || '').replace(/\D/g, '').slice(0, 5);
-        const itemCity = String(opts?.cityOf?.(item) || '').trim().toLowerCase();
-        const itemZip = String(opts?.zipOf?.(item) || '').replace(/\D/g, '').slice(0, 5);
-        if (city && itemCity && city === itemCity) score += 8;
-        if (zip && itemZip && zip === itemZip) score += 5;
       }
+    }
+    if (score > 0) {
+      const city = String(opts?.city || '').trim().toLowerCase();
+      const zip = String(opts?.zip || '').replace(/\D/g, '').slice(0, 5);
+      const itemCity = String(opts?.cityOf?.(item) || '').trim().toLowerCase();
+      const itemZip = String(opts?.zipOf?.(item) || '').replace(/\D/g, '').slice(0, 5);
+      if (city && itemCity && city === itemCity) score += 8;
+      if (zip && itemZip && zip === itemZip) score += 5;
     }
     if (score > (best?.score || 0)) {
       second = best?.score || 0;
@@ -272,14 +282,59 @@ export function lineStarting(text: string, prefix: string): string | null {
 export function normalizeState(state: string | null | undefined): string {
   const raw = String(state || '').trim().toUpperCase();
   const names: Record<string, string> = {
+    ALABAMA: 'AL',
+    ALASKA: 'AK',
+    ARIZONA: 'AZ',
+    ARKANSAS: 'AR',
     CALIFORNIA: 'CA',
-    WASHINGTON: 'WA',
-    'NEW YORK': 'NY',
-    MASSACHUSETTS: 'MA',
-    MINNESOTA: 'MN',
-    PENNSYLVANIA: 'PA',
-    TEXAS: 'TX',
+    COLORADO: 'CO',
+    CONNECTICUT: 'CT',
+    DELAWARE: 'DE',
     FLORIDA: 'FL',
+    GEORGIA: 'GA',
+    HAWAII: 'HI',
+    IDAHO: 'ID',
+    ILLINOIS: 'IL',
+    INDIANA: 'IN',
+    IOWA: 'IA',
+    KANSAS: 'KS',
+    KENTUCKY: 'KY',
+    LOUISIANA: 'LA',
+    MAINE: 'ME',
+    MARYLAND: 'MD',
+    MASSACHUSETTS: 'MA',
+    MICHIGAN: 'MI',
+    MINNESOTA: 'MN',
+    MISSISSIPPI: 'MS',
+    MISSOURI: 'MO',
+    MONTANA: 'MT',
+    NEBRASKA: 'NE',
+    NEVADA: 'NV',
+    'NEW HAMPSHIRE': 'NH',
+    'NEW JERSEY': 'NJ',
+    'NEW MEXICO': 'NM',
+    'NEW YORK': 'NY',
+    'NORTH CAROLINA': 'NC',
+    'NORTH DAKOTA': 'ND',
+    OHIO: 'OH',
+    OKLAHOMA: 'OK',
+    OREGON: 'OR',
+    PENNSYLVANIA: 'PA',
+    'RHODE ISLAND': 'RI',
+    'SOUTH CAROLINA': 'SC',
+    'SOUTH DAKOTA': 'SD',
+    TENNESSEE: 'TN',
+    TEXAS: 'TX',
+    UTAH: 'UT',
+    VERMONT: 'VT',
+    VIRGINIA: 'VA',
+    WASHINGTON: 'WA',
+    'WEST VIRGINIA': 'WV',
+    WISCONSIN: 'WI',
+    WYOMING: 'WY',
+    'DISTRICT OF COLUMBIA': 'DC',
+    'WASHINGTON DC': 'DC',
+    'WASHINGTON D C': 'DC',
   };
   if (raw.length === 2) return raw;
   return names[raw] || raw;

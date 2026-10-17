@@ -15,6 +15,7 @@ import {
   pickBestNameMatchScored,
   sodaNameNeedle,
   splitPersonName,
+  splitLegalAndDba,
   trigramSimilarity,
 } from './names.js';
 import { parseNyOpenDataJson } from './nyOpenData.js';
@@ -94,6 +95,16 @@ describe('normalizeCompanyName', () => {
   });
 });
 
+describe('splitLegalAndDba', () => {
+  it('keeps the trade name that normalizeCompanyName would strip', () => {
+    assert.deepEqual(splitLegalAndDba('Sample Builders LLC DBA Sample Crew'), {
+      legal: 'Sample Builders LLC',
+      dba: 'Sample Crew',
+    });
+    assert.equal(splitLegalAndDba('Sample Builders LLC').dba, null);
+  });
+});
+
 describe('sole prop person heuristic', () => {
   it('accepts 2–3 word names without company words', () => {
     assert.equal(looksLikeSolePropPerson('MARY ELLEN'), true);
@@ -106,6 +117,8 @@ describe('sole prop person heuristic', () => {
 describe('geo helpers', () => {
   it('normalizes state names and NYC cities', () => {
     assert.equal(normalizeState('California'), 'CA');
+    assert.equal(normalizeState('Illinois'), 'IL');
+    assert.equal(normalizeState('Colorado'), 'CO');
     assert.equal(isNycCity('Brooklyn'), true);
     assert.equal(isNycCity('Albany'), false);
   });
@@ -169,6 +182,17 @@ describe('trigram fallback', () => {
       { allowTrigram: false },
     );
     assert.equal(stillSubstring?.method, 'substring');
+    const cityTie = pickBestNameMatchScored(
+      'Acme Builders LLC',
+      [
+        { n: 'ACME BUILDERS', city: 'Fresno' },
+        { n: 'ACME BUILDERS', city: 'Oakland' },
+      ],
+      (r) => r.n,
+      { city: 'Oakland', cityOf: (r) => r.city, allowTrigram: false },
+    );
+    assert.equal(cityTie?.item.city, 'Oakland');
+    assert.ok((cityTie?.score || 0) > 100);
     assert.equal(sodaNameNeedle('Smith HVAC, LLC DBA Cool'), 'SMITH HVAC');
     assert.match(sodaWhereContains('business_name', 'Smith HVAC Heating Cooling LLC'), /SMITH/);
     assert.match(sodaWhereContains('business_name', 'Smith HVAC Heating Cooling LLC'), /COOLING/);

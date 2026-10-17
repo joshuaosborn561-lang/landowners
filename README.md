@@ -38,6 +38,7 @@ This service writes to project **`kemvxzhcxvynmoutwdrh`**, schema **`permit_parc
 | `match_texas_officers` | Texas Comptroller PIR officers (`only_unmatched`, limit 50, resume) |
 | `match_florida_officers` | Florida Sunbiz officers (`only_unmatched`, public HTML; optional `florida_sos_api_key`) |
 | `match_state_owners` | Umbrella: route a list by state to CSLB / L&I / NYC DOB / NY DOS / MA CSL+SOS / MN DLI / PA DOS / TDLR. Counts only. MA falls back from license number to business-name search, then Secretary of the Commonwealth officers. PA uses Department of State business search (AG HIC is Turnstile-gated and disabled). |
+| `lookup_business_owner` | Phase 1 scaffold: US owner lookup by company name + city + state (no license number). `get_business_owner_job` for status. Dry/estimate only — see PLAN.md. Permit path stays on `match_state_owners`. |
 | `match_california_owners` … `match_texas_tdlr_owners` | Per-state owner tools (same contract; callable on their own) |
 | `lookup_line_type` | Veriphone Standard (~$2.40/1k) cell vs landline |
 | `owner_people_search` / `record_owner_cell` | Google + free people-search leftovers |

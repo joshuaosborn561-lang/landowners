@@ -172,6 +172,8 @@ export function mountMcpHttp(app: Express): void {
         'match_minnesota_owners',
         'match_pennsylvania_owners',
         'match_texas_tdlr_owners',
+        'lookup_business_owner',
+        'get_business_owner_job',
         'recompute_officer_dial_status',
         'lookup_line_type',
         'owner_people_search',
