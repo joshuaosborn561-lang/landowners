@@ -11,7 +11,7 @@ import {
 } from './caBizfile.js';
 import { fetchCaStatementOfficers } from './caSi.js';
 import type { LookupContext } from './context.js';
-import { getIlIndex, matchIlDta, IL_DTA_HOME } from './ilDta.js';
+import { ensureIlDtaIndex, matchIlDta, IL_DTA_HOME } from './ilDta.js';
 import { resolveHtmlOfficerState } from './htmlStates.js';
 import { resolveColoradoAgentOnly, resolveOhioAgentOnly } from './agentStates.js';
 import { hitsFromRoster } from './officers.js';
@@ -146,7 +146,7 @@ async function resolveCalifornia(input: NameLookupInput, ctx?: LookupContext): P
 }
 
 async function resolveIllinois(input: NameLookupInput, ctx?: LookupContext): Promise<NameLookupResult> {
-  const index = getIlIndex(ctx?.ilDtaDir ?? process.env.IL_DTA_DIR, ctx?.ilIndex);
+  const index = await ensureIlDtaIndex(ctx);
   if (!index || !index.list.length) {
     return emptyNameResult(input, 'no_source', 'us_sos', {
       implemented: true,
@@ -208,7 +208,7 @@ export async function resolveNameLookup(
   if (state === 'GA' || state === 'NC' || state === 'AZ') {
     return resolveHtmlOfficerState(input, state, ctx);
   }
-  if (state === 'OH') return resolveOhioAgentOnly(input);
+  if (state === 'OH') return resolveOhioAgentOnly(input, ctx);
   if (state === 'CO') return resolveColoradoAgentOnly(input, ctx);
 
   if (entry.officers === 'agent_only' || entry.officers === 'none') {

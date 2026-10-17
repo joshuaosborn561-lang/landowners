@@ -1,6 +1,6 @@
 import { getBoardFetch, type FetchLike } from '../http.js';
 import type { NameLookupInput } from './types.js';
-import { ApifySpendTracker } from './spend.js';
+import { ApifySpendTracker, apifyMaxUsdFromEnv } from './spend.js';
 import type { IlDtaIndex } from './ilDta.js';
 
 export type HtmlKind = 'search' | 'detail' | 'document';
@@ -25,10 +25,25 @@ export interface LookupContext {
   htmlByUrl?: Record<string, string>;
   /** Fixture rows for Colorado Socrata. */
   coRows?: unknown[];
+  /** Fixture rows / payload for Ohio businessnamediv JSON. */
+  ohRows?: unknown[];
+  ohEndpoints?: unknown;
+  /** Fixture payload for Arizona Business Center JSON. */
+  azPayload?: unknown;
+  azDetailPayload?: unknown;
+  /** Hard cap for Apify spend this context. Env: APIFY_MAX_USD. */
+  apifyMaxUsd?: number | null;
   /** Injected OCR (tests). Production uses tesseract.js when installed. */
   ocr?: (bytes: Uint8Array) => Promise<string>;
   /** Injected Apify HTML fetch (tests). */
-  apifyFetchHtml?: (url: string) => Promise<{ html: string; usd: number }>;
+  apifyFetchHtml?: (url: string) => Promise<{
+    html: string;
+    usd: number;
+    text?: string;
+    refused?: boolean;
+    bytesBase64?: string;
+    contentType?: string;
+  }>;
 }
 
 export function apifyTokenFromEnv(): string | null {
@@ -44,7 +59,7 @@ export function ilDtaDirFromEnv(): string | null {
 }
 
 export function defaultLookupContext(overrides: LookupContext = {}): LookupContext {
-  return {
+  const ctx: LookupContext = {
     live: true,
     fetch: getBoardFetch(),
     apifyToken: apifyTokenFromEnv(),
@@ -52,8 +67,11 @@ export function defaultLookupContext(overrides: LookupContext = {}): LookupConte
     ilDtaDir: ilDtaDirFromEnv(),
     includeAgents: false,
     spend: overrides.spend ?? new ApifySpendTracker(),
+    apifyMaxUsd: overrides.apifyMaxUsd ?? apifyMaxUsdFromEnv(),
     ...overrides,
   };
+  if (ctx.spend && ctx.apifyMaxUsd != null) ctx.spend.capUsd = ctx.apifyMaxUsd;
+  return ctx;
 }
 
 export function ctxFetch(ctx?: LookupContext): FetchLike {

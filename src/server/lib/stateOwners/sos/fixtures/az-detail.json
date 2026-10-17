@@ -1,0 +1,10 @@
+{
+  "data": {
+    "businessName": "SAMPLE ELECTRIC LLC",
+    "entityNumber": "R00000001",
+    "principals": [
+      { "name": "JANE SAMPLE", "title": "Manager" },
+      { "name": "JOHN SAMPLE", "title": "Member" }
+    ]
+  }
+}

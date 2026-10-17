@@ -1,4 +1,4 @@
-import { DESKTOP_UA, looksBlocked } from '../http.js';
+import { DESKTOP_UA, isChallengePage, looksBlocked } from '../http.js';
 import type { LookupContext } from './context.js';
 import { ctxFetch } from './context.js';
 import { apifyFetchHtml } from './apifyPlaywright.js';
@@ -8,18 +8,77 @@ import { CA_BIZFILE_ONLINE_SEARCH, CA_BIZFILE_ONLINE_UI, type CaBizfileEntity } 
 
 export { CA_BIZFILE_ONLINE_SEARCH, CA_BIZFILE_ONLINE_UI };
 
-export function caSiImageUrls(entityId: string): string[] {
+/** Verified from public bizfileOnline / indexed filings. Path param is document id, not file number. */
+export const CA_SI_IMAGE_BASE = 'https://bizfileonline.sos.ca.gov/api/report/GetImageByNum';
+
+export function caSiImageUrl(documentId: string): string {
+  const id = String(documentId || '').trim().replace(/^\/+/, '');
+  return `${CA_SI_IMAGE_BASE}/${encodeURIComponent(id)}`;
+}
+
+/** @deprecated invented query-string URLs — use caSiImageUrl(documentId). */
+export function caSiImageUrls(entityOrDocumentId: string): string[] {
+  return [caSiImageUrl(entityOrDocumentId)];
+}
+
+export function caSiHistoryUrls(entityId: string): string[] {
   const id = encodeURIComponent(entityId.trim());
   return [
-    `https://bizfileonline.sos.ca.gov/api/FilingImages/GetImageByNum?fileNumber=${id}`,
-    `https://bizfileonline.sos.ca.gov/api/Records/GetImageByNum?fileNumber=${id}`,
-    `https://bizfileonline.sos.ca.gov/api/Records/GetImageByNum?num=${id}`,
+    `https://bizfileonline.sos.ca.gov/api/History/business/${id}`,
+    `https://bizfileonline.sos.ca.gov/api/FilingDetail/business/${id}`,
   ];
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+export function documentIdsFromPayload(payload: unknown): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  const walk = (node: unknown) => {
+    if (!node) return;
+    if (typeof node === 'string') {
+      const m = node.match(/GetImageByNum\/([0-9]{12,})/);
+      if (m?.[1] && !seen.has(m[1])) {
+        seen.add(m[1]);
+        ids.push(m[1]);
+      }
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    const rec = asRecord(node);
+    if (!rec) return;
+    for (const key of ['DOCUMENT_ID', 'DocumentId', 'documentId', 'IMAGE_NUM', 'ImageNum', 'imageNum', 'IMAGE_ID']) {
+      const v = rec[key];
+      if (typeof v === 'string' && v.trim() && !seen.has(v.trim())) {
+        seen.add(v.trim());
+        ids.push(v.trim());
+      }
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        const s = String(v);
+        if (!seen.has(s)) {
+          seen.add(s);
+          ids.push(s);
+        }
+      }
+    }
+    for (const v of Object.values(rec)) walk(v);
+  };
+  walk(payload);
+  return ids;
 }
 
 function officersFromUnknown(payload: unknown): RosterEntry[] {
   if (!payload) return [];
-  if (typeof payload === 'string') return parseOfficerRoster(payload);
+  if (typeof payload === 'string') {
+    if (isChallengePage(payload)) return [];
+    return parseOfficerRoster(payload);
+  }
   const blob = JSON.stringify(payload);
   const fromText = parseOfficerRoster(blob);
   if (fromText.length) return fromText;
@@ -53,13 +112,16 @@ async function fetchBytes(
     headers: {
       'User-Agent': DESKTOP_UA,
       Accept: 'application/json,application/pdf,image/*,text/html;q=0.8,*/*;q=0.5',
+      Origin: 'https://bizfileonline.sos.ca.gov',
+      Referer: `${CA_BIZFILE_ONLINE_UI}/`,
       ...(init?.headers || {}),
     },
   });
   const bytes = new Uint8Array(await res.arrayBuffer());
   const contentType = res.headers.get('content-type') || '';
-  const preview = Buffer.from(bytes.slice(0, 400)).toString('utf8');
-  const blocked = looksBlocked(res.status, preview) || res.status === 403 || res.status === 401;
+  const preview = Buffer.from(bytes.slice(0, 800)).toString('utf8');
+  const blocked =
+    looksBlocked(res.status, preview) || isChallengePage(preview) || res.status === 403 || res.status === 401;
   return { status: res.status, bytes, contentType, blocked, url: res.url || url };
 }
 
@@ -79,6 +141,7 @@ async function parseDocumentBytes(
   ctx: LookupContext | undefined,
 ): Promise<CaSiFetchResult | null> {
   const preview = Buffer.from(bytes.slice(0, 800)).toString('utf8');
+  if (isChallengePage(preview)) return null;
   if (preview.trim().startsWith('{') || preview.trim().startsWith('[')) {
     try {
       const payload = JSON.parse(Buffer.from(bytes).toString('utf8'));
@@ -91,6 +154,7 @@ async function parseDocumentBytes(
     }
   }
   const doc = await textFromDocument(bytes, contentType, ctx);
+  if (isChallengePage(doc.text)) return null;
   const entries = parseOfficerRoster(doc.text);
   if (entries.length) {
     return { entries, text: doc.text, source_url: sourceUrl, via_apify: false, ocr_used: doc.ocr_used, usd: 0 };
@@ -100,7 +164,7 @@ async function parseDocumentBytes(
 
 /**
  * Statement of Information officers. Direct image/JSON first, Apify Playwright
- * only if the official host blocks, OCR only for image SI (tesseract.js).
+ * only if the official host blocks, OCR for PDF/image SI (tesseract.js).
  */
 export async function fetchCaStatementOfficers(
   entity: CaBizfileEntity,
@@ -116,6 +180,7 @@ export async function fetchCaStatementOfficers(
     usd: 0,
   };
   if (ctx?.caSiText != null) {
+    if (isChallengePage(ctx.caSiText)) return empty;
     return {
       ...empty,
       entries: parseOfficerRoster(ctx.caSiText),
@@ -129,6 +194,7 @@ export async function fetchCaStatementOfficers(
   }
   if (!entityId || !ctx?.live) return empty;
 
+  const documentIds: string[] = [];
   try {
     const searchRes = await fetchBytes(CA_BIZFILE_ONLINE_SEARCH, ctx, {
       method: 'POST',
@@ -144,12 +210,36 @@ export async function fetchCaStatementOfficers(
     if (!searchRes.blocked) {
       const parsed = await parseDocumentBytes(searchRes.bytes, searchRes.contentType, CA_BIZFILE_ONLINE_SEARCH, ctx);
       if (parsed) return parsed;
+      try {
+        const payload = JSON.parse(Buffer.from(searchRes.bytes).toString('utf8'));
+        documentIds.push(...documentIdsFromPayload(payload));
+      } catch {
+        /* continue */
+      }
     }
   } catch {
-    /* try images */
+    /* try history / images */
   }
 
-  for (const url of caSiImageUrls(entityId)) {
+  for (const url of caSiHistoryUrls(entityId)) {
+    try {
+      const got = await fetchBytes(url, ctx);
+      if (got.blocked || got.status >= 400) continue;
+      const parsed = await parseDocumentBytes(got.bytes, got.contentType, url, ctx);
+      if (parsed) return parsed;
+      try {
+        documentIds.push(...documentIdsFromPayload(JSON.parse(Buffer.from(got.bytes).toString('utf8'))));
+      } catch {
+        /* continue */
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  const uniqueIds = [...new Set(documentIds)];
+  for (const docId of uniqueIds) {
+    const url = caSiImageUrl(docId);
     try {
       const got = await fetchBytes(url, ctx);
       if (got.blocked || got.status >= 400) continue;
@@ -161,10 +251,15 @@ export async function fetchCaStatementOfficers(
   }
 
   if (ctx.apifyEnabled === false) return empty;
-  const imageUrl = caSiImageUrls(entityId)[0];
-  const apify = await apifyFetchHtml(imageUrl, ctx);
+  const imageUrl = uniqueIds.length ? caSiImageUrl(uniqueIds[0]) : `${CA_BIZFILE_ONLINE_UI}/${encodeURIComponent(entityId)}`;
+  const apify = await apifyFetchHtml(imageUrl, ctx, { documentBytes: true, immediate: true });
+  if (apify.refused) return { ...empty, via_apify: false, usd: 0 };
+  if (apify.bytes && apify.bytes.length) {
+    const parsed = await parseDocumentBytes(apify.bytes, apify.contentType || 'application/octet-stream', imageUrl, ctx);
+    if (parsed) return { ...parsed, via_apify: true, usd: apify.usd };
+  }
   const html = apify.html || apify.text;
-  if (html) {
+  if (html && !isChallengePage(html) && !looksBlocked(200, html)) {
     const entries = parseOfficerRoster(html);
     if (entries.length) {
       return {
@@ -176,8 +271,7 @@ export async function fetchCaStatementOfficers(
         usd: apify.usd,
       };
     }
-    const asBytes = Buffer.from(html);
-    const parsed = await parseDocumentBytes(asBytes, 'text/html', imageUrl, ctx);
+    const parsed = await parseDocumentBytes(Buffer.from(html), 'text/html', imageUrl, ctx);
     if (parsed) return { ...parsed, via_apify: true, usd: apify.usd };
   }
   return { ...empty, via_apify: true, usd: apify.usd };

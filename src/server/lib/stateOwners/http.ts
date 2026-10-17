@@ -255,9 +255,33 @@ export class PacedBoardClient {
   }
 }
 
+/**
+ * Bot-challenge / WAF interstitial. Never treat this HTML as a search hit or
+ * officer roster — "cookies" is not COO, and a blocked page is not a match.
+ */
+export function isChallengePage(body: string): boolean {
+  const text = body || '';
+  if (!text.trim()) return false;
+  if (/just a moment/i.test(text)) return true;
+  if (/enable javascript and cookies/i.test(text)) return true;
+  if (
+    /cf-mitigation|cf-browser-verification|challenge-platform|cdn-cgi\/challenge-platform|window\._cf_chl_opt|window\.__CF\$cv\$params/i.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  if (/checking your browser before accessing|attention required|managed challenge/i.test(text)) return true;
+  if (incapsulaDetected(text) && /<META NAME="robots"/i.test(text) && text.length < 4000) return true;
+  if (/_Incapsula_Resource/i.test(text) && text.length < 4000) return true;
+  return false;
+}
+
 export function looksBlocked(status: number, body: string): boolean {
   if (status === 403 || status === 401 || status === 429) return true;
   const text = body || '';
+  // Challenge pages never count as a match, even if they mention Officer/Director.
+  if (isChallengePage(text)) return true;
   const hasPayload =
     /Business Information|Governing person|license_number|Qualifying Person|Licensee|owner_name|principalname|OWNER NAME|Officer|Director|Entity Name/i.test(
       text,
@@ -266,11 +290,7 @@ export function looksBlocked(status: number, body: string): boolean {
   if (/cf-turnstile|challenges\.cloudflare\.com\/turnstile/i.test(text) && !hasPayload) return true;
   if (incapsulaDetected(text) && !hasPayload) return true;
   // Real board pages often include a reCAPTCHA widget; only treat challenge shells as blocked.
-  if (
-    /just a moment|cf-mitigation|access denied|unusual traffic|please complete the captcha|enable javascript and cookies to continue/i.test(
-      text,
-    )
-  ) {
+  if (/access denied|unusual traffic|please complete the captcha/i.test(text)) {
     return !hasPayload;
   }
   return false;

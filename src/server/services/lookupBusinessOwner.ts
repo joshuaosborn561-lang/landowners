@@ -221,9 +221,9 @@ export async function lookupBusinessOwner(opts: LookupBusinessOwnerOpts): Promis
       writes_enabled: WRITES_ENABLED,
       josh_signup: [
         'Do not sign up at calicodev.sos.ca.gov — the developer API is government-agencies-only',
-        'Confirm Apify CU + residential GB (bizfileOnline Incapsula/Imperva blocks datacenter IPs; APIFY_TOKEN)',
+        'Confirm Apify CU + residential GB (bizfileOnline Incapsula/Imperva blocks datacenter IPs; APIFY_TOKEN). Set APIFY_MAX_USD as a hard cap.',
         'Optional: CA weekly bulk if it includes Statement of Information officers',
-        'Illinois Data Transparency Act Annual Report files (free; set IL_DTA_DIR; do not scrape the search UI)',
+        'Illinois Data Transparency Act bulk zips auto-download from ilsos.gov/data/bs (or set IL_DTA_DIR). Search UI scrape is forbidden; missing files are no_source.',
       ],
       assistant_instructions:
         'Phase 2 estimate only. No SOS calls. No writes. Do not dump company names. Show counts, $ envelope, and Apify vs IL-file setup. CA has no API key (calicodev is government-only).',

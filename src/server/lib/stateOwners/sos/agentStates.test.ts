@@ -10,17 +10,32 @@ const coRows = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'co-soda.json'), 'utf8'),
 );
 
+const ohRows = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'oh-search.json'), 'utf8'),
+).data;
+
 describe('OH/CO agent_only', () => {
-  it('marks Ohio as agent_only without Apify', async () => {
+  it('returns no_source for Ohio when no JSON lookup ran', async () => {
     const result = await resolveOhioAgentOnly({
       company_name: 'Sample Masonry LLC',
       city: 'Columbus',
       state: 'OH',
     });
-    assert.equal(result.coverage_reason, 'agent_only');
+    assert.equal(result.coverage_reason, 'no_source');
     assert.equal(result.implemented, true);
     assert.equal(result.people.length, 0);
     assert.equal(result.via_apify, undefined);
+  });
+
+  it('marks Ohio agent_only only after a confirmed entity record', async () => {
+    const result = await resolveOhioAgentOnly(
+      { company_name: 'Sample Masonry LLC', city: 'Columbus', state: 'OH' },
+      { live: false, ohRows },
+    );
+    assert.equal(result.coverage_reason, 'agent_only');
+    assert.equal(result.business_name, 'SAMPLE MASONRY LLC');
+    assert.equal(result.people.length, 0);
+    assert.equal(result.people.some((p) => isWaterfallReady(p)), false);
   });
 
   it('confirms a Colorado entity via Socrata and never treats the agent as waterfall-ready', async () => {

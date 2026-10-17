@@ -1,0 +1,9 @@
+{
+  "note": "Recorded shape keys from bizfileOnline History. Live datacenter GET is Incapsula-blocked (see ca-incapsula-block.html). Image URL is GET /api/report/GetImageByNum/{documentId} — not a fileNumber query string.",
+  "ROWS": [
+    {
+      "FILING_TYPE": "Statement of Information",
+      "DOCUMENT_ID": "000111222333444555666777888999000111222333444555"
+    }
+  ]
+}

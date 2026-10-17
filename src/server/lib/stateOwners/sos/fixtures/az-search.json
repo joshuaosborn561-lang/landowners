@@ -1,0 +1,13 @@
+{
+  "data": {
+    "totalCount": 1,
+    "rows": [
+      {
+        "businessName": "SAMPLE ELECTRIC LLC",
+        "entityNumber": "R00000001",
+        "city": "Phoenix",
+        "physicalAddress": { "city": "Phoenix" }
+      }
+    ]
+  }
+}

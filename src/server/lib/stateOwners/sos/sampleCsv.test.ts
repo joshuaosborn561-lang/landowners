@@ -25,6 +25,7 @@ describe('owner_lookup_sample helpers', () => {
       caSiText: readFileSync(join(dir, 'ca-si-text.txt'), 'utf8'),
       ilIndex: index,
       coRows: JSON.parse(readFileSync(join(dir, 'co-soda.json'), 'utf8')),
+      ohRows: JSON.parse(readFileSync(join(dir, 'oh-search.json'), 'utf8')).data,
       htmlFor: (state, kind) => {
         if (state === 'GA') return kind === 'search' ? html('ga-search.html') : html('ga-detail.html');
         if (state === 'NC') return kind === 'search' ? html('nc-search.html') : html('nc-detail.html');

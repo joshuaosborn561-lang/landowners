@@ -1,4 +1,4 @@
-import { DESKTOP_UA, looksBlocked } from '../http.js';
+import { DESKTOP_UA, isChallengePage, looksBlocked } from '../http.js';
 import { isRegistryAgentName } from '../names.js';
 import type { CoverageReason } from '../types.js';
 import { apifyFetchHtml } from './apifyPlaywright.js';
@@ -220,7 +220,7 @@ export async function searchCaBizfileOnline(
     });
     status = res.status;
     body = await res.text();
-    const blocked = looksBlocked(status, body) || status === 403 || status === 401;
+    const blocked = looksBlocked(status, body) || isChallengePage(body) || status === 403 || status === 401;
     const payload = parseMaybeJson(body);
     if (!blocked && payload != null) {
       return { status, payload, blocked: false, via_apify: false, usd: 0, source_url };
@@ -234,7 +234,13 @@ export async function searchCaBizfileOnline(
     return { status, payload: null, blocked: true, via_apify: false, usd: 0, source_url };
   }
   const apify = await apifyFetchHtml(CA_BIZFILE_ONLINE_UI, ctx, { pageFunction: caSearchPageFunction(searchTerm) });
+  if (apify.refused) {
+    return { status, payload: null, blocked: true, via_apify: false, usd: 0, source_url };
+  }
   const raw = apify.html || apify.text;
+  if (!raw || isChallengePage(raw) || looksBlocked(200, raw)) {
+    return { status: status || 0, payload: null, blocked: true, via_apify: true, usd: apify.usd, source_url };
+  }
   const payload = parseMaybeJson(raw);
   return {
     status: payload ? 200 : status || 0,

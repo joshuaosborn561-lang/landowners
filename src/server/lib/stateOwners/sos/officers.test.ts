@@ -24,6 +24,12 @@ Registered Agent: CT CORPORATION SYSTEM
     assert.equal(rows[0]?.role, 'member');
   });
 
+  it('does not treat cookies as COO', () => {
+    const html = `<html><body><h1>Just a moment...</h1><span>Enable JavaScript and cookies to continue</span></body></html>`;
+    assert.equal(parseOfficerRoster(html).length, 0);
+    assert.equal(parseOfficerRoster('Enable JavaScript and cookies to continue').length, 0);
+  });
+
   it('maps roster rows to people with first/last', () => {
     const people = rosterToPeople(
       [{ name: 'JANE SAMPLE', title: 'CEO', role: 'officer' }],

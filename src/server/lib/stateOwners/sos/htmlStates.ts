@@ -1,10 +1,12 @@
 import { htmlToText } from '../names.js';
+import { isChallengePage } from '../http.js';
 import type { LookupContext } from './context.js';
 import { fetchOfficialPage } from './htmlFetch.js';
 import { pickBestEntityMatch } from './match.js';
 import { hitsFromRoster, parseOfficerRoster } from './officers.js';
 import type { NameLookupInput, NameLookupResult } from './types.js';
 import { catalogByCode } from './catalog.js';
+import { isEmptyJsShell, resolveArizona, AZ_SEARCH_UI } from './azCenter.js';
 
 interface SearchHit {
   name: string;
@@ -14,7 +16,7 @@ interface SearchHit {
 
 const GA_SEARCH = 'https://ecorp.sos.ga.gov/BusinessSearch';
 const NC_SEARCH = 'https://www.sosnc.gov/online_services/search/by_title/_Business_Registration';
-const AZ_SEARCH = 'https://arizonabusinesscenter.azcc.gov/businesssearch';
+const AZ_SEARCH = AZ_SEARCH_UI;
 
 function absUrl(href: string, base: string): string {
   try {
@@ -27,6 +29,7 @@ function absUrl(href: string, base: string): string {
 export function parseSearchResultLinks(html: string, base: string): SearchHit[] {
   const rows: SearchHit[] = [];
   const seen = new Set<string>();
+  if (isChallengePage(html) || isEmptyJsShell(html)) return rows;
   for (const m of String(html || '').matchAll(/<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)) {
     const href = m[1] || '';
     const name = htmlToText(m[2] || '').replace(/\s+/g, ' ').trim();
@@ -64,11 +67,27 @@ function searchUrlFor(state: string, company: string): { url: string; base: stri
   };
 }
 
+function blockedResult(
+  sourceUrl: string,
+  extra?: Partial<NameLookupResult>,
+): NameLookupResult {
+  return {
+    people: [],
+    coverage_reason: 'blocked',
+    source: 'us_sos',
+    source_url: sourceUrl,
+    implemented: true,
+    ...extra,
+  };
+}
+
 export async function resolveHtmlOfficerState(
   input: NameLookupInput,
   state: 'GA' | 'NC' | 'AZ',
   ctx?: LookupContext,
 ): Promise<NameLookupResult> {
+  if (state === 'AZ') return resolveArizona(input, ctx);
+
   const entry = catalogByCode().get(state)!;
   const sourceUrl = entry.search_url;
   const { url, base } = searchUrlFor(state, input.company_name);
@@ -80,10 +99,13 @@ export async function resolveHtmlOfficerState(
   });
   let viaApify = search.via_apify;
   let usd = search.usd;
+  if (search.blocked || isChallengePage(search.body)) {
+    return blockedResult(sourceUrl, { via_apify: viaApify, apify_usd: usd });
+  }
   if (!search.body) {
     return {
       people: [],
-      coverage_reason: search.blocked ? 'blocked' : 'not_found',
+      coverage_reason: 'not_found',
       source: 'us_sos',
       source_url: sourceUrl,
       implemented: true,
@@ -93,29 +115,14 @@ export async function resolveHtmlOfficerState(
   }
 
   const links = parseSearchResultLinks(search.body, base);
-  const candidates = links.length
-    ? links
-    : [{ name: input.company_name, url, city: input.city }];
-  const picked = pickBestEntityMatch(input.company_name, candidates, {
+  // Never match the input name against itself when the SOS page had no result links.
+  const picked = pickBestEntityMatch(input.company_name, links, {
     legalNameOf: (r) => r.name,
     city: input.city,
     cityOf: (r) => r.city,
     allowTrigram: true,
   });
   if (!picked) {
-    const roster = parseOfficerRoster(search.body);
-    if (roster.length) {
-      return {
-        people: hitsFromRoster(input, roster, 'us_sos', search.url, 'substring'),
-        coverage_reason: null,
-        source: 'us_sos',
-        source_url: search.url,
-        implemented: true,
-        match_method: 'substring',
-        via_apify: viaApify,
-        apify_usd: usd,
-      };
-    }
     return {
       people: [],
       coverage_reason: 'not_found',
@@ -138,10 +145,22 @@ export async function resolveHtmlOfficerState(
     });
     viaApify = viaApify || detail.via_apify;
     usd += detail.usd;
+    if (detail.blocked || isChallengePage(detail.body)) {
+      return blockedResult(picked.item.url, {
+        via_apify: viaApify,
+        apify_usd: usd,
+        match_method: picked.method,
+        match_score: picked.score,
+        business_name: picked.item.name,
+      });
+    }
     if (detail.body) {
       detailBody = detail.body;
       detailUrl = detail.url;
     }
+  }
+  if (isChallengePage(detailBody)) {
+    return blockedResult(detailUrl, { via_apify: viaApify, apify_usd: usd, business_name: picked.item.name });
   }
   const entries = parseOfficerRoster(detailBody);
   const people = hitsFromRoster(input, entries, 'us_sos', detailUrl, picked.method);

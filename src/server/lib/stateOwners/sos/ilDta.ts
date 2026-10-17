@@ -1,12 +1,31 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
+import { DESKTOP_UA, isChallengePage, looksBlocked } from '../http.js';
 import { isRegistryAgentName } from '../names.js';
+import type { LookupContext } from './context.js';
+import { ctxFetch } from './context.js';
 import { pickBestEntityMatch } from './match.js';
 import { parseOfficerRoster, type RosterEntry } from './officers.js';
 import type { NameLookupInput } from './types.js';
 
+const execFileAsync = promisify(execFile);
+
 /** Illinois Data Transparency Act bulk files (P.A. 102-0049). Do not scrape the search UI. */
 export const IL_DTA_HOME = 'https://www.ilsos.gov/data/bus-serv-home.html';
+export const IL_DTA_ZIP_BASE = 'https://www.ilsos.gov/data/bs';
+/** Officer + name files from the official DTA zip set (fgregg/il-corporate-filings Makefile). */
+export const IL_DTA_PREFERRED_ZIPS = [
+  'cdxallnam.zip',
+  'cdxallarp.zip',
+  'cdxallagt.zip',
+  'llcallnam.zip',
+  'llcallmgr.zip',
+  'llcallarp.zip',
+  'llcallagt.zip',
+];
 
 export interface IlDtaEntity {
   file_number: string;
@@ -233,6 +252,112 @@ export function getIlIndex(dir: string | null | undefined, injected?: IlDtaIndex
 
 export function resetIlIndexCache(): void {
   cached = null;
+}
+
+export function parseIlDtaHomeLinks(html: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of String(html || '').matchAll(/href=["']([^"']+\.(?:zip|txt|csv|dat))["']/gi)) {
+    const href = m[1] || '';
+    try {
+      const url = new URL(href, IL_DTA_HOME).href;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      out.push(url);
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
+export function defaultIlDtaCacheDir(): string {
+  return process.env.IL_DTA_DIR?.trim() || join(tmpdir(), 'il-dta-cache');
+}
+
+async function unzipArchive(zipPath: string, dest: string): Promise<void> {
+  try {
+    await execFileAsync('unzip', ['-o', '-q', zipPath, '-d', dest]);
+  } catch {
+    await execFileAsync('python3', [
+      '-c',
+      'import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])',
+      zipPath,
+      dest,
+    ]);
+  }
+}
+
+async function writeAndIngest(
+  destDir: string,
+  filename: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  mkdirSync(destDir, { recursive: true });
+  const path = join(destDir, filename);
+  writeFileSync(path, bytes);
+  if (bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b) {
+    await unzipArchive(path, destDir);
+  }
+}
+
+export async function downloadIlDtaFiles(
+  destDir: string,
+  ctx?: LookupContext,
+): Promise<{ downloaded: number; urls: string[] }> {
+  const fetchFn = ctxFetch(ctx);
+  const urls: string[] = [];
+  try {
+    const home = await fetchFn(IL_DTA_HOME, {
+      headers: { 'User-Agent': DESKTOP_UA, Accept: 'text/html' },
+    });
+    const html = await home.text();
+    if (!looksBlocked(home.status, html) && !isChallengePage(html)) {
+      urls.push(...parseIlDtaHomeLinks(html));
+    }
+  } catch {
+    /* known zip list below */
+  }
+  if (!urls.length) {
+    for (const name of IL_DTA_PREFERRED_ZIPS) {
+      urls.push(`${IL_DTA_ZIP_BASE}/${name}`);
+    }
+  }
+  let downloaded = 0;
+  for (const url of urls) {
+    try {
+      const res = await fetchFn(url, {
+        headers: { 'User-Agent': DESKTOP_UA, Accept: 'application/zip,text/plain,*/*' },
+      });
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const preview = Buffer.from(bytes.slice(0, 400)).toString('utf8');
+      if (looksBlocked(res.status, preview) || isChallengePage(preview) || res.status >= 400) continue;
+      if (!bytes.length) continue;
+      const filename = decodeURIComponent(url.split('/').pop() || `dta-${downloaded}.bin`);
+      await writeAndIngest(destDir, filename, bytes);
+      downloaded += 1;
+    } catch {
+      continue;
+    }
+  }
+  return { downloaded, urls };
+}
+
+/**
+ * Local DTA dir first. If empty and live, auto-download official zip files.
+ * When nothing can be loaded, callers must return no_source (never a fake match).
+ */
+export async function ensureIlDtaIndex(ctx?: LookupContext): Promise<IlDtaIndex | null> {
+  if (ctx?.ilIndex) return ctx.ilIndex.list.length ? ctx.ilIndex : null;
+  const dir = ctx?.ilDtaDir ?? (ctx?.live ? defaultIlDtaCacheDir() : process.env.IL_DTA_DIR?.trim() || null);
+  if (!dir) return null;
+  let index = getIlIndex(dir, null);
+  if (index && index.list.length) return index;
+  if (!ctx?.live) return null;
+  await downloadIlDtaFiles(dir, ctx);
+  resetIlIndexCache();
+  index = getIlIndex(dir, null);
+  return index && index.list.length ? index : null;
 }
 
 export function matchIlDta(

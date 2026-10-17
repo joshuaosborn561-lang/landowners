@@ -57,6 +57,15 @@ export function agentOnlyHit(
 
 export function isWaterfallReady(hit: WaterfallOwnerHit): boolean {
   if (hit.coverage_reason === 'agent_only' || hit.role === 'registered_agent') return false;
+  if (
+    hit.coverage_reason === 'blocked' ||
+    hit.coverage_reason === 'not_found' ||
+    hit.coverage_reason === 'no_source' ||
+    hit.coverage_reason === 'not_implemented'
+  ) {
+    return false;
+  }
+  if (!hit.source_url) return false;
   return Boolean(hit.first_name || hit.last_name);
 }
 

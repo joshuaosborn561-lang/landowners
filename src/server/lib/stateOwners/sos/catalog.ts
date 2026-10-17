@@ -20,7 +20,7 @@ export const STATE_SOS_CATALOG: StateSosCatalogEntry[] = [
     anti_bot: 'bizfileOnline is Incapsula/Imperva. Direct HTTP first; Apify Playwright + residential if blocked.',
     apify: 'fallback',
     implement_order: 1,
-    notes: 'Public search + Statement of Information officers. Never paid datasets. CSLB permit path still needs a license number.',
+    notes: 'Public search + SI officers from GET /api/report/GetImageByNum/{documentId}. Never paid datasets. CSLB permit path still needs a license number.',
   }),
   row({
     code: 'IL',
@@ -34,7 +34,7 @@ export const STATE_SOS_CATALOG: StateSosCatalogEntry[] = [
     anti_bot: 'Search UI bot-challenged; datacenter IPs refused. ToS forbid robots/scraping.',
     apify: 'never',
     implement_order: 2,
-    notes: 'Use Annual Report + Assumed Names bulk files. Apify against apps.ilsos.gov is a ToS violation.',
+    notes: 'Auto-download DTA zip files from ilsos.gov/data/bs (cdxallarp, llcallmgr, name/agent). If none load, coverage_reason=no_source. Never scrape the search UI.',
   }),
   row({
     code: 'GA',
@@ -62,7 +62,7 @@ export const STATE_SOS_CATALOG: StateSosCatalogEntry[] = [
     anti_bot: 'Challenge can return 403 HTML that looks like a page',
     apify: 'never',
     implement_order: 4,
-    notes: 'No ongoing officer roster. Statutory agent only. Do not spend Apify hoping for owners.',
+    notes: 'No ongoing officer roster. Confirm entity via ajax/endPoints.json + NS_{query}_X JSON. Unverified agent_only is forbidden. Do not spend Apify hoping for owners.',
   }),
   row({
     code: 'NC',
@@ -90,7 +90,7 @@ export const STATE_SOS_CATALOG: StateSosCatalogEntry[] = [
     anti_bot: 'eCorp retired Jan 2026; new Business Center likely blocked',
     apify: 'fallback',
     implement_order: 6,
-    notes: 'LLC members/managers and corporate officers. Probe before scaling.',
+    notes: 'SPA shell is not a match. JSON at api-azbusinessconnectonline.azcc.gov (browser/Apify session). Never paid OpenSOSData.',
   }),
   row({
     code: 'CO',

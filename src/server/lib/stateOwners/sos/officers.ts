@@ -28,6 +28,8 @@ const TITLE =
   'President|Vice\\s+President|Secretary|Treasurer|Director|Manager|Managing\\s+Member|Member|' +
   'CEO|CFO|COO|VP|Governor|Partner|Principal|Owner|Organizer|Officer';
 
+/** Word-bounded so "cookies" cannot match COO, "cooperation" cannot match COO, etc. */
+const TITLE_BOUNDED = `\\b(?:${TITLE})\\b`;
 const TITLE_RE = new RegExp(`^(?:${TITLE})$`, 'i');
 const SKIP_NAME =
   /^(name|title|address|city|state|zip|none|n\/a|same|see below|continued|officer|director|manager|member)$/i;
@@ -83,7 +85,7 @@ export function parseOfficerRoster(textOrHtml: string): RosterEntry[] {
   const seen = new Set<string>();
 
   const labeled = new RegExp(
-    `(?:${TITLE})\\s*[:\\-#]*\\s*([A-Z][A-Za-z .'-]{1,40}(?:,\\s*[A-Z][A-Za-z .'-]{1,40})?)`,
+    `${TITLE_BOUNDED}\\s*[:\\-#]*\\s*([A-Z][A-Za-z .'-]{1,40}(?:,\\s*[A-Z][A-Za-z .'-]{1,40})?)`,
     'gi',
   );
   for (const hit of text.matchAll(labeled)) {
@@ -92,7 +94,7 @@ export function parseOfficerRoster(textOrHtml: string): RosterEntry[] {
   }
 
   const reversed = new RegExp(
-    `([A-Z][A-Za-z .'-]{1,40}(?:,\\s*[A-Z][A-Za-z .'-]{1,40})?)\\s*,\\s*(${TITLE})\\b`,
+    `([A-Z][A-Za-z .'-]{1,40}(?:,\\s*[A-Z][A-Za-z .'-]{1,40})?)\\s*,\\s*(${TITLE_BOUNDED})`,
     'gi',
   );
   for (const hit of text.matchAll(reversed)) {
@@ -102,7 +104,7 @@ export function parseOfficerRoster(textOrHtml: string): RosterEntry[] {
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const titled = line.match(new RegExp(`^(${TITLE})\\s*[:\\-]?\\s*(.+)$`, 'i'));
+    const titled = line.match(new RegExp(`^(${TITLE_BOUNDED})\\s*[:\\-]?\\s*(.+)$`, 'i'));
     if (titled?.[1] && titled[2] && !isOfficerTitle(titled[2])) {
       pushEntry(out, seen, titled[2], titled[1]);
       continue;

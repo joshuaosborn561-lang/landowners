@@ -1,12 +1,23 @@
 import { DESKTOP_UA } from '../http.js';
 import type { LookupContext } from './context.js';
 import { ctxSpend } from './context.js';
-import { APIFY_USD_PER_BLOCKED_LOOKUP, usdFromApifyRun } from './spend.js';
+import {
+  APIFY_USD_PER_BLOCKED_LOOKUP,
+  apifyMaxUsdFromEnv,
+  usdFromApifyRun,
+} from './spend.js';
 
 export const APIFY_PLAYWRIGHT_ACTOR = 'apify/playwright-scraper';
 export const APIFY_PLAYWRIGHT_ACTOR_ID = 'apify~playwright-scraper';
 
 const ALLOWED_ACTORS = new Set([APIFY_PLAYWRIGHT_ACTOR, APIFY_PLAYWRIGHT_ACTOR_ID, 'apify/web-scraper', 'apify~web-scraper']);
+
+/** Apify waitForFinish max is 60s; longer runs are polled. */
+const WAIT_FOR_FINISH_SEC = 60;
+const POLL_MS = 4000;
+const POLL_MAX_MS = 8 * 60 * 1000;
+const BATCH_SIZE = 20;
+const BATCH_WAIT_MS = 80;
 
 export class PaidDatasetForbiddenError extends Error {
   constructor(actor: string) {
@@ -25,13 +36,47 @@ const PAGE_FUNCTION = `async function pageFunction(context) {
   return { url: context.request.url, html, text };
 }`;
 
+/** Fetch URL bytes (PDF/image SI) as base64 after the browser has cookies. */
+export const DOCUMENT_BYTES_PAGE_FUNCTION = `async function pageFunction(context) {
+  const got = await context.page.evaluate(async (href) => {
+    const r = await fetch(href, { credentials: 'include' });
+    const ab = await r.arrayBuffer();
+    const bytes = new Uint8Array(ab);
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
+    }
+    return { b64: btoa(binary), contentType: r.headers.get('content-type'), status: r.status };
+  }, context.request.url);
+  return {
+    url: context.request.url,
+    html: '',
+    text: '',
+    bytesBase64: got.b64,
+    contentType: got.contentType,
+    status: got.status,
+  };
+}`;
+
 export interface ApifyHtmlResult {
   html: string;
   text: string;
   usd: number;
   cu: number;
   runId?: string;
+  refused?: boolean;
+  bytes?: Uint8Array;
+  contentType?: string;
 }
+
+type RunData = {
+  defaultDatasetId?: string;
+  usageTotalUsd?: number;
+  stats?: { computeUnits?: number };
+  id?: string;
+  status?: string;
+};
 
 async function apifyJson(url: string, init: RequestInit, fetchFn: typeof fetch): Promise<unknown> {
   const res = await fetchFn(url, init);
@@ -43,33 +88,188 @@ async function apifyJson(url: string, init: RequestInit, fetchFn: typeof fetch):
   }
 }
 
+function emptyRefused(): ApifyHtmlResult {
+  return { html: '', text: '', usd: 0, cu: 0, refused: true };
+}
+
+function capOf(ctx?: LookupContext): number | null {
+  if (ctx?.apifyMaxUsd != null) return ctx.apifyMaxUsd;
+  return apifyMaxUsdFromEnv();
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function runTerminal(status?: string): boolean {
+  return ['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT'].includes(String(status || ''));
+}
+
+async function pollRun(
+  runId: string,
+  token: string,
+  fetchFn: typeof fetch,
+): Promise<RunData | null> {
+  const started = Date.now();
+  let last: RunData | null = null;
+  while (Date.now() - started < POLL_MAX_MS) {
+    const wrap = (await apifyJson(
+      `https://api.apify.com/v2/actor-runs/${encodeURIComponent(runId)}?token=${encodeURIComponent(token)}`,
+      { headers: { Accept: 'application/json', 'User-Agent': DESKTOP_UA } },
+      fetchFn,
+    )) as { data?: RunData };
+    last = wrap?.data || null;
+    if (runTerminal(last?.status)) return last;
+    await sleep(POLL_MS);
+  }
+  return last;
+}
+
+interface BatchJob {
+  url: string;
+  resolve: (r: ApifyHtmlResult) => void;
+  reject: (e: unknown) => void;
+}
+
+const batches = new WeakMap<object, Map<string, { jobs: BatchJob[]; timer: ReturnType<typeof setTimeout> | null; flushing: boolean }>>();
+
+function batchKey(pageFunction: string): string {
+  return pageFunction;
+}
+
 /**
  * Official-page HTML via apify/playwright-scraper + residential proxy.
- * Never paid Store officer datasets.
+ * Never paid Store officer datasets. Refused runs (no token, cap, failed start)
+ * do not increment spend. Many startUrls share one actor run.
  */
 export async function apifyFetchHtml(
   url: string,
   ctx?: LookupContext,
-  opts?: { pageFunction?: string },
+  opts?: { pageFunction?: string; immediate?: boolean; documentBytes?: boolean },
 ): Promise<ApifyHtmlResult> {
   if (ctx?.apifyFetchHtml) {
     const got = await ctx.apifyFetchHtml(url);
-    ctxSpend(ctx).add(got.usd);
-    return { html: got.html, text: '', usd: got.usd, cu: 0 };
+    if (got.refused) {
+      ctxSpend(ctx).refuse();
+      return emptyRefused();
+    }
+    if (got.usd > 0) ctxSpend(ctx).add(got.usd);
+    const bytes = got.bytesBase64 ? Buffer.from(got.bytesBase64, 'base64') : undefined;
+    return {
+      html: got.html || '',
+      text: got.text || '',
+      usd: got.usd || 0,
+      cu: 0,
+      bytes,
+      contentType: got.contentType,
+    };
   }
+
   const token = ctx?.apifyToken?.trim();
   if (!token || ctx?.apifyEnabled === false) {
-    return { html: '', text: '', usd: 0, cu: 0 };
+    ctxSpend(ctx).refuse();
+    return emptyRefused();
   }
+
+  const spend = ctxSpend(ctx);
+  const cap = capOf(ctx);
+  if (cap != null) spend.capUsd = cap;
+  if (spend.wouldExceed(APIFY_USD_PER_BLOCKED_LOOKUP)) {
+    spend.refuse();
+    return emptyRefused();
+  }
+
+  const pageFunction = opts?.documentBytes ? DOCUMENT_BYTES_PAGE_FUNCTION : opts?.pageFunction || PAGE_FUNCTION;
+  if (opts?.immediate || opts?.pageFunction || opts?.documentBytes) {
+    const map = await runActorPages([url], ctx, token, pageFunction);
+    return map.get(url) || emptyRefused();
+  }
+
+  return enqueueBatch(url, ctx, token, pageFunction);
+}
+
+function enqueueBatch(
+  url: string,
+  ctx: LookupContext | undefined,
+  token: string,
+  pageFunction: string,
+): Promise<ApifyHtmlResult> {
+  const host = ctx || { __solo: true };
+  let byFn = batches.get(host);
+  if (!byFn) {
+    byFn = new Map();
+    batches.set(host, byFn);
+  }
+  let bucket = byFn.get(batchKey(pageFunction));
+  if (!bucket) {
+    bucket = { jobs: [], timer: null, flushing: false };
+    byFn.set(batchKey(pageFunction), bucket);
+  }
+  return new Promise((resolve, reject) => {
+    bucket!.jobs.push({ url, resolve, reject });
+    if (bucket!.jobs.length >= BATCH_SIZE) {
+      if (bucket!.timer) clearTimeout(bucket!.timer);
+      bucket!.timer = null;
+      void flushBucket(bucket!, ctx, token, pageFunction);
+    } else if (!bucket!.timer) {
+      bucket!.timer = setTimeout(() => {
+        bucket!.timer = null;
+        void flushBucket(bucket!, ctx, token, pageFunction);
+      }, BATCH_WAIT_MS);
+    }
+  });
+}
+
+async function flushBucket(
+  bucket: { jobs: BatchJob[]; timer: ReturnType<typeof setTimeout> | null; flushing: boolean },
+  ctx: LookupContext | undefined,
+  token: string,
+  pageFunction: string,
+): Promise<void> {
+  if (bucket.flushing) return;
+  const jobs = bucket.jobs.splice(0, bucket.jobs.length);
+  if (!jobs.length) return;
+  bucket.flushing = true;
+  try {
+    const urls = jobs.map((j) => j.url);
+    const map = await runActorPages(urls, ctx, token, pageFunction);
+    for (const job of jobs) {
+      job.resolve(map.get(job.url) || emptyRefused());
+    }
+  } catch (err) {
+    for (const job of jobs) job.reject(err);
+  } finally {
+    bucket.flushing = false;
+    if (bucket.jobs.length) void flushBucket(bucket, ctx, token, pageFunction);
+  }
+}
+
+async function runActorPages(
+  urls: string[],
+  ctx: LookupContext | undefined,
+  token: string,
+  pageFunction: string,
+): Promise<Map<string, ApifyHtmlResult>> {
+  const out = new Map<string, ApifyHtmlResult>();
+  const unique = [...new Set(urls.filter(Boolean))];
+  if (!unique.length) return out;
+
+  const spend = ctxSpend(ctx);
+  if (spend.wouldExceed(APIFY_USD_PER_BLOCKED_LOOKUP)) {
+    spend.refuse();
+    for (const url of unique) out.set(url, emptyRefused());
+    return out;
+  }
+
   assertAllowedApifyActor(APIFY_PLAYWRIGHT_ACTOR);
   const fetchFn = (ctx?.fetch as typeof fetch) ?? fetch;
-  const start = `https://api.apify.com/v2/acts/${APIFY_PLAYWRIGHT_ACTOR_ID}/runs?token=${encodeURIComponent(token)}&waitForFinish=120`;
+  const start = `https://api.apify.com/v2/acts/${APIFY_PLAYWRIGHT_ACTOR_ID}/runs?token=${encodeURIComponent(token)}&waitForFinish=${WAIT_FOR_FINISH_SEC}`;
   const input = {
-    startUrls: [{ url }],
+    startUrls: unique.map((url) => ({ url })),
     keepUrlFragments: false,
     linkSelector: '',
     globs: [],
-    pageFunction: opts?.pageFunction || PAGE_FUNCTION,
+    pageFunction,
     proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] },
     proxyRotation: 'RECOMMENDED',
     maxConcurrency: 2,
@@ -80,33 +280,82 @@ export async function apifyFetchHtml(
     waitUntil: 'networkidle',
     initialCookies: [],
   };
-  const runWrap = (await apifyJson(
-    start,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': DESKTOP_UA },
-      body: JSON.stringify(input),
-    },
-    fetchFn,
-  )) as { data?: { defaultDatasetId?: string; usageTotalUsd?: number; stats?: { computeUnits?: number }; id?: string } };
-  const run = runWrap?.data;
-  const cost = usdFromApifyRun(run);
-  const spend = ctxSpend(ctx);
-  const usd = cost.usd || APIFY_USD_PER_BLOCKED_LOOKUP;
-  spend.add(usd, { cu: cost.cu });
+
+  let run: RunData | undefined;
+  try {
+    const runWrap = (await apifyJson(
+      start,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': DESKTOP_UA },
+        body: JSON.stringify(input),
+      },
+      fetchFn,
+    )) as { data?: RunData };
+    run = runWrap?.data;
+  } catch {
+    spend.refuse();
+    for (const url of unique) out.set(url, emptyRefused());
+    return out;
+  }
+
+  if (!run?.id && !run?.defaultDatasetId) {
+    spend.refuse();
+    for (const url of unique) out.set(url, emptyRefused());
+    return out;
+  }
+
+  if (run?.id && !runTerminal(run.status)) {
+    const polled = await pollRun(run.id, token, fetchFn);
+    if (polled) run = { ...run, ...polled };
+  }
+
+  const succeeded = run?.status === 'SUCCEEDED';
+  const cost = usdFromApifyRun(run, { succeeded });
+  if (cost.usd > 0 || cost.cu > 0) {
+    spend.add(cost.usd, { cu: cost.cu, lookups: unique.length });
+  } else if (!succeeded) {
+    spend.refuse();
+  }
+
   const datasetId = run?.defaultDatasetId;
-  if (!datasetId) return { html: '', text: '', usd, cu: cost.cu, runId: run?.id };
+  if (!datasetId || !succeeded) {
+    for (const url of unique) {
+      out.set(url, {
+        html: '',
+        text: '',
+        usd: cost.usd,
+        cu: cost.cu,
+        runId: run?.id,
+        refused: !succeeded,
+      });
+    }
+    return out;
+  }
+
   const itemsWrap = (await apifyJson(
     `https://api.apify.com/v2/datasets/${datasetId}/items?token=${encodeURIComponent(token)}&clean=true`,
     { headers: { Accept: 'application/json', 'User-Agent': DESKTOP_UA } },
     fetchFn,
-  )) as Array<{ html?: string; text?: string }>;
-  const row = Array.isArray(itemsWrap) ? itemsWrap[0] : null;
-  return {
-    html: String(row?.html || ''),
-    text: String(row?.text || ''),
-    usd,
-    cu: cost.cu,
-    runId: run?.id,
-  };
+  )) as Array<{ url?: string; html?: string; text?: string; bytesBase64?: string; contentType?: string }>;
+  const items = Array.isArray(itemsWrap) ? itemsWrap : [];
+  const perUrl = new Map<string, (typeof items)[0]>();
+  for (const row of items) {
+    if (row?.url) perUrl.set(row.url, row);
+  }
+  let i = 0;
+  for (const url of unique) {
+    const row = perUrl.get(url) || items[i++];
+    const bytes = row?.bytesBase64 ? Buffer.from(row.bytesBase64, 'base64') : undefined;
+    out.set(url, {
+      html: String(row?.html || ''),
+      text: String(row?.text || ''),
+      usd: cost.usd,
+      cu: cost.cu,
+      runId: run?.id,
+      bytes,
+      contentType: row?.contentType,
+    });
+  }
+  return out;
 }

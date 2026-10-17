@@ -20,6 +20,8 @@ No lead names, company names from the first-use file, or officer names appear he
 
 - Official Secretary of State / Corporation Commission / equivalent sources only.
 - Apify is **fallback HTML fetch** for states that block automation. Never paid Store datasets, never SOSfinder / OpenSOSData / Parse.bot / similar wrappers.
+- A blocked/challenge page (Cloudflare “Just a moment”, “Enable JavaScript and cookies”, Incapsula interstitial) is **never** a match and is never parsed for officers.
+- No person is waterfall-ready without a confirmed company record from the official source. Do not match the input name against itself.
 - Do not treat a registered agent as an owner. Agent-only hits are `coverage_reason=agent_only`, confidence `low`, and are **not** handed to Email Finder.
 - MCP replies stay counts / job ids / nameless samples. Persist people server-to-server.
 - First-use volume cited below is a **count only**.
@@ -151,7 +153,7 @@ Official SOS page: [Business Entities Records Request](https://www.sos.ca.gov/bu
 
 - Returns **officers / managers / at least one member** (not beneficial owners, not shareholders).
 - No API field for this. Phase 2: after entity-number match, fetch the SI image or the HTML entity record that lists officers.
-- `bizfileOnline` is a JS app behind **Incapsula/Imperva**. Try official image URLs / session-less document links first. **Apify Playwright + residential proxy only if that blocks.** Never a paid CA dataset. There is a paid “master” bulk product (~$100 in help-guide citations); **do not buy it**.
+- `bizfileOnline` is a JS app behind **Incapsula/Imperva**. Statement of Information images are `GET https://bizfileonline.sos.ca.gov/api/report/GetImageByNum/{documentId}` (document id, not file number). History JSON supplies `DOCUMENT_ID`. Direct HTTP first; **Apify Playwright + residential, then OCR on PDF/image bytes**, if Incapsula blocks. Never a paid CA dataset. There is a paid “master” bulk product (~$100 in help-guide citations); **do not buy it**.
 
 ### 5.4 CA weekly bulk (optional, still official)
 
@@ -177,7 +179,7 @@ Fictitious business names are **county** filings, not SOS. DBA matching uses SOS
 | Anti-bot | Datacenter IPs refused; search is bot-challenged |
 | ToS | **Automated queries, scraping, robots strictly prohibited** on the website ([privacy / terms](https://www.ilsos.gov/privacypolicy.html)) |
 
-**Do not Apify the IL search UI.** Use the official annual-report bulk files. If a file is missing officers, stop and ask Josh for the Annual Report extract — do not scrape around the ToS.
+**Do not Apify the IL search UI.** Auto-download the official DTA zips from `https://www.ilsos.gov/data/bs/` (`cdxallarp`, `llcallmgr`, name/agent files). If download/index is empty, `coverage_reason=no_source`. Do not scrape the search UI.
 
 ### Georgia
 
@@ -206,7 +208,7 @@ Direct HTML first. Apify Playwright fallback if blocked.
 | Rate limits | Unpublished |
 | Anti-bot | Challenge on the data host; naive fetchers can ingest a 403 HTML page and think they succeeded |
 
-**Name-path yield for owners is structurally low.** Mark `agent_only` / `no_source`. Do not spend Apify budget hoping officers appear.
+Confirm the entity via `ajax/endPoints.json` → `businessnamediv` + `NS_{query}_X`. If that JSON cannot be reached, `no_source` (or `blocked` on Cloudflare). **Never** return unverified `agent_only`. Officers are structurally absent — confirmed entities are `agent_only`. Do not spend Apify hoping officers appear. `apify: never`.
 
 ### North Carolina
 
@@ -230,12 +232,12 @@ HTML first, Apify if blocked.
 | Official search | [arizonabusinesscenter.azcc.gov/businesssearch](https://arizonabusinesscenter.azcc.gov/businesssearch) (eCorp retired Jan 2026 — do not use old eCorp URLs) |
 | Officers? | **Yes** — LLC members/managers; corporate officers/directors |
 | Agent | Statutory agent |
-| API / bulk | Records request only; no free bulk |
+| API / bulk | Official JSON at `https://api-azbusinessconnectonline.azcc.gov/api` (`businesssearch/public-search`, `getbyidasync`). Datacenter GETs 401; call from a browser/Apify session. No free bulk. Never OpenSOSData. |
 | Signup / key | None for public search |
 | Rate limits | Unpublished |
-| Anti-bot | New portal; treat as **likely blocked** until probed with a throwaway query |
+| Anti-bot | Angular SPA (`<app-root></app-root>`). Empty JS shell is **not** a match. Direct HTML parse is useless. |
 
-Probe with one synthetic search in Phase 2. Apify fallback probable.
+JSON first (in-session), then Apify Playwright. Never fall back to matching the input name against itself.
 
 ### Colorado
 
@@ -315,7 +317,7 @@ Existing adapters in this repo are marked **HAVE**.
 
 ## 8. Apify policy and cost
 
-**Allowed:** `apify/playwright-scraper` (or `apify/web-scraper`) as pay-per-**usage** HTML fetch, `groups-RESIDENTIAL`, media download off, `maxConcurrency` 2–5, **batched runs** (not one Actor start per company). Reuse existing `APIFY_PROXY_PASSWORD`.
+**Allowed:** `apify/playwright-scraper` (or `apify/web-scraper`) as pay-per-**usage** HTML fetch, `groups-RESIDENTIAL`, media download off, `maxConcurrency` 2–5, **batched startUrls per Actor run** (not one run per lookup). `waitForFinish=60` then poll the run until SUCCEEDED/FAILED. Hard cap `APIFY_MAX_USD` — refuse new runs at the cap. Refused / never-started / failed-with-no-usage runs are **$0**. Reuse existing `APIFY_PROXY_PASSWORD`.
 
 **Forbidden:** Store Actors that sell officer lists; Unblocker / captcha solvers; paid third-party SOS APIs.
 
@@ -411,13 +413,14 @@ Already in this repo (do not rotate unless `health` says missing): PermitStack, 
 
 ## 12. Phase 2 delivered in this PR (still no deploy / no writes)
 
-1. **CA** public bizfileOnline search (`POST /api/Records/businessSearch`) + Statement of Information officers. Direct HTTP first; Apify `playwright-scraper` + residential if Incapsula/Imperva blocks. tesseract.js OCR on image SI when installed. **No `CA_SOS_API_KEY`.** Never paid datasets.
-2. **IL** Data Transparency Act bulk files (`IL_DTA_DIR`): TSV/CSV or fixed-width annual-report / name / agent. Search UI is never called.
-3. **GA / NC / AZ** official HTML, Apify fallback if blocked.
-4. **OH / CO** `agent_only` (CO via keyless Socrata `4ykn-tg5h`). No Apify.
-5. MCP `lookup_business_owner` batch (`rows[]`, `max_rows` up to 5000), `estimate_only`, `wait`, `get_business_owner_job` status + per-state hit rates + `apify_usd_spent`.
-6. CLI `scripts/owner_lookup_sample.ts` — CSV in, results CSV + summary JSON (hit rate by state, officer vs agent-only, Apify $). No Supabase.
-7. Unit tests + fixtures. Permit path (`match_state_owners` / CSLB license) stays green.
+1. **CA** public bizfileOnline search (`POST /api/Records/businessSearch`) + SI officers from `GET /api/report/GetImageByNum/{documentId}`. Direct HTTP first; Apify Playwright + residential if Incapsula blocks; OCR on PDF/image SI. **No `CA_SOS_API_KEY`.** Never paid datasets.
+2. **IL** auto-download DTA zips from `ilsos.gov/data/bs` (or `IL_DTA_DIR`). Empty index → `no_source`. Search UI is never called.
+3. **GA / NC** official HTML, Apify fallback if blocked. Challenge pages are never parsed.
+4. **AZ** Business Center JSON API via browser/Apify; empty SPA shell is not a match.
+5. **OH** JSON entity confirm (`endPoints.json` + `NS_{query}_X`) or `no_source` / `blocked`. Never unverified `agent_only`. **CO** via keyless Socrata `4ykn-tg5h`. No Apify.
+6. MCP `lookup_business_owner` batch (`rows[]`, `max_rows` up to 5000), `estimate_only`, `wait`, `get_business_owner_job` status + per-state hit rates + `apify_usd_spent`. `APIFY_MAX_USD` hard cap.
+7. CLI `scripts/owner_lookup_sample.ts` — CSV in, results CSV + summary JSON (hit rate by state, officer vs agent-only, Apify $). No Supabase.
+8. Unit tests + recorded Cloudflare/Incapsula fixtures. Permit path (`match_state_owners` / CSLB license) stays green.
 
 Still later (not this PR): persist to Email Finder; `source_table` paging; remaining HAVE adapters (FL/TX/MA/PA/NY/WA/MN); optional `match_state_owners` fallback when `no_license_number`.
 
