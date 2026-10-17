@@ -21,6 +21,9 @@ export const COVERAGE_REASONS = [
   'parse_error',
   'name_miss',
   'no_source',
+  'agent_only',
+  'missing_key',
+  'not_implemented',
 ] as const;
 
 export type CoverageReason = (typeof COVERAGE_REASONS)[number];
@@ -38,6 +41,8 @@ export const BOARD_SOURCES = [
   'mn_dli',
   'pa_hic',
   'pa_dos',
+  'ca_bizfile',
+  'us_sos',
 ] as const;
 
 export type BoardSource = (typeof BOARD_SOURCES)[number];

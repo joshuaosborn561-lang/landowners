@@ -1,0 +1,45 @@
+{
+  "RecordCount": 2,
+  "EntityData": [
+    {
+      "EntityID": "202399900001",
+      "EntityType": "Limited Liability Company - CA",
+      "StatusDescription": "Active",
+      "EntityName": "SAMPLE BUILDERS LLC",
+      "ForeignEntityName": null,
+      "Jurisdiction": "CALIFORNIA",
+      "EntityStreetAddress1": null,
+      "EntityCity": null,
+      "EntityState": null,
+      "EntityZipCode": null,
+      "AgentName": "CT CORPORATION SYSTEM",
+      "AgentCity": "SACRAMENTO",
+      "AgentState": "CA",
+      "MailingStreetAddress1": "100 MAIN ST",
+      "MailingCity": "SACRAMENTO",
+      "MailingState": "CA",
+      "MailingZipCode": "95814",
+      "SiFrequency": "Annual"
+    },
+    {
+      "EntityID": "202399900002",
+      "EntityType": "Limited Liability Company - CA",
+      "StatusDescription": "Active",
+      "EntityName": "SAMPLE BUILDERS LLC DBA SAMPLE CREW",
+      "ForeignEntityName": null,
+      "Jurisdiction": "CALIFORNIA",
+      "EntityStreetAddress1": "200 OAK AVE",
+      "EntityCity": "OAKLAND",
+      "EntityState": "CA",
+      "EntityZipCode": "94612",
+      "AgentName": "PAT AGENT",
+      "AgentCity": "OAKLAND",
+      "AgentState": "CA",
+      "MailingStreetAddress1": "200 OAK AVE",
+      "MailingCity": "OAKLAND",
+      "MailingState": "CA",
+      "MailingZipCode": "94612",
+      "SiFrequency": "Annual"
+    }
+  ]
+}

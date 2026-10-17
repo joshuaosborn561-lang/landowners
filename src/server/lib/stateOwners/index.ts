@@ -21,3 +21,4 @@ export * from './sunbizAdapter.js';
 export * from './txOpenData.js';
 export * from './txSosAdapter.js';
 export * from './router.js';
+export * from './sos/index.js';

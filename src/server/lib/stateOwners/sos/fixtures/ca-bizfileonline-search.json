@@ -1,0 +1,20 @@
+{
+  "rows": [
+    {
+      "RECORD_NUM": "202399900001",
+      "TITLE": ["SAMPLE BUILDERS LLC"],
+      "STATUS": "Active",
+      "ENTITY_TYPE": "Limited Liability Company - CA",
+      "AGENT": { "NAME": "CT CORPORATION SYSTEM", "ADDRESS": { "CITY": "SACRAMENTO" } },
+      "MAILING_ADDRESS": { "CITY": "SACRAMENTO", "POSTAL_CODE": "95814" }
+    },
+    {
+      "RECORD_NUM": "202399900002",
+      "TITLE": ["SAMPLE BUILDERS LLC DBA SAMPLE CREW"],
+      "STATUS": "Active",
+      "ENTITY_TYPE": "Limited Liability Company - CA",
+      "PRINCIPAL_ADDRESS": { "CITY": "OAKLAND", "POSTAL_CODE": "94612" },
+      "AGENT": { "NAME": "PAT AGENT", "ADDRESS": { "CITY": "OAKLAND" } }
+    }
+  ]
+}

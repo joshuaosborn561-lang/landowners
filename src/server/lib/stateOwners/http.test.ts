@@ -1,14 +1,42 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   apifyProxyPasswordEnvName,
   formatMaProxyAttemptLog,
   hasCaptchaOrTurnstile,
+  isChallengePage,
   isPlainHttpBlock,
   looksBlocked,
   residentialProxyUrl,
   shouldRetryMaViaProxy,
 } from './http.js';
+
+const sosFixtures = join(dirname(fileURLToPath(import.meta.url)), 'sos', 'fixtures');
+
+describe('challenge pages never count as SOS matches', () => {
+  it('flags recorded Cloudflare Just a moment HTML', () => {
+    const html = readFileSync(join(sosFixtures, 'nc-cloudflare-just-a-moment.html'), 'utf8');
+    assert.equal(isChallengePage(html), true);
+    assert.equal(looksBlocked(200, html), true);
+    assert.equal(looksBlocked(403, html), true);
+  });
+
+  it('flags recorded Incapsula interstitial', () => {
+    const html = readFileSync(join(sosFixtures, 'ca-incapsula-block.html'), 'utf8');
+    assert.equal(isChallengePage(html), true);
+    assert.equal(looksBlocked(200, html), true);
+  });
+
+  it('does not let Officer in a challenge page override the block', () => {
+    const html =
+      '<title>Just a moment...</title><span>Enable JavaScript and cookies to continue</span> Officer Director';
+    assert.equal(isChallengePage(html), true);
+    assert.equal(looksBlocked(200, html), true);
+  });
+});
 
 describe('MA residential proxy retry gates', () => {
   it('treats Imperva 200 as a plain HTTP block, not a captcha', () => {
